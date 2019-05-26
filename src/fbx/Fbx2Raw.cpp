@@ -73,9 +73,69 @@ static void ReadMesh(
     FbxScene* pScene,
     FbxNode* pNode,
     const std::map<const FbxTexture*, FbxString>& textureLocations) {
-  FbxGeometryConverter meshConverter(pScene->GetFbxManager());
-  meshConverter.Triangulate(pNode->GetNodeAttribute(), true);
+  const bool shouldTriangulateQuads = false;
+
+  struct Triangle {
+    int originalPolyIndex;
+    int polyVertexIndices[3];
+  };
+
   FbxMesh* pMesh = pNode->GetMesh();
+
+  std::vector<Triangle> triangles;
+  if (shouldTriangulateQuads &&
+      pNode->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::eMesh) {
+    // TODO before commit: shorten some of these variable names consistently across the file
+    int polyCount[20] = {0};
+    for (int polygonIndex = 0; polygonIndex < pMesh->GetPolygonCount(); polygonIndex++) {
+      polyCount[std::min(pMesh->GetPolygonSize(polygonIndex), 20)]++;
+    }
+    fmt::printf(
+        "Before triangulation:\nThere are %d polys and %d control points.\n",
+        pMesh->GetPolygonCount(),
+        pMesh->GetControlPointsCount());
+    for (int i = 0; i < 20; i++) {
+      if (polyCount[i] > 0) {
+        fmt::printf("Polygon<%d> count: %d\n", i, polyCount[i]);
+      }
+    }
+
+    // FbxGeometryConverter meshConverter(pScene->GetFbxManager());
+    // meshConverter.Triangulate(pNode->GetNodeAttribute(), true);
+    // pMesh = pNode->GetMesh();
+    // fmt::printf(
+    //     "After triangulation, there are %d tris and %d control points.\n",
+    //     pMesh->GetPolygonCount(),
+    //     pMesh->GetControlPointsCount());
+    int* allPolygonVertices = pMesh->GetPolygonVertices();
+    int anchorIndex = -1;
+    for (int polygonIndex = 0; polygonIndex < pMesh->GetPolygonCount(); polygonIndex++) {
+      int polyVertexCount = pMesh->GetPolygonSize(polygonIndex);
+      int polyVertexStart = pMesh->GetPolygonVertexIndex(polygonIndex);
+      int offset = (anchorIndex == allPolygonVertices[polyVertexCount]) ? 1 : 0;
+      anchorIndex = allPolygonVertices[polyVertexStart + offset];
+      for (int vertexIndex = offset + 2; vertexIndex < offset + polyVertexCount; vertexIndex++) {
+        int firstTriIndex = vertexIndex - 1;
+        int otherTriIndex = vertexIndex % polyVertexCount;
+        triangles.push_back({polygonIndex,
+                             polyVertexStart + offset,
+                             polyVertexStart + firstTriIndex,
+                             polyVertexStart + otherTriIndex});
+      }
+    }
+    fmt::printf("After triangulation, there are %d tris.\n", triangles.size());
+  } else {
+    FbxGeometryConverter meshConverter(pScene->GetFbxManager());
+    meshConverter.Triangulate(pNode->GetNodeAttribute(), true);
+    pMesh = pNode->GetMesh();
+    int polygonVertexIndex = 0;
+    for (int polygonIndex = 0; polygonIndex < pMesh->GetPolygonCount(); polygonIndex++) {
+      FBX_ASSERT(pMesh->GetPolygonSize(polygonIndex) == 3);
+      triangles.push_back(
+          {polygonIndex, polygonVertexIndex + 0, polygonVertexIndex + 1, polygonVertexIndex + 2});
+      polygonVertexIndex += 3;
+    }
+  }
 
   // Obtains the surface Id
   const long surfaceId = pMesh->GetUniqueID();
@@ -91,6 +151,8 @@ static void ReadMesh(
     // This surface is already loaded
     return;
   }
+
+  int* allPolygonVertices = pMesh->GetPolygonVertices();
 
   const char* meshName = (pNode->GetName()[0] != '\0') ? pNode->GetName() : pMesh->GetName();
   const int rawSurfaceIndex = raw.AddSurface(meshName, surfaceId);
@@ -197,11 +259,10 @@ static void ReadMesh(
     }
   }
 
-  int polygonVertexIndex = 0;
-  for (int polygonIndex = 0; polygonIndex < pMesh->GetPolygonCount(); polygonIndex++) {
-    FBX_ASSERT(pMesh->GetPolygonSize(polygonIndex) == 3);
-    const std::shared_ptr<FbxMaterialInfo> fbxMaterial = materials.GetMaterial(polygonIndex);
-    const std::vector<std::string> userProperties = materials.GetUserProperties(polygonIndex);
+  for (int triIx = 0; triIx < triangles.size(); triIx++) {
+    int originalPolyIx = triangles[triIx].originalPolyIndex;
+    const std::shared_ptr<FbxMaterialInfo> fbxMaterial = materials.GetMaterial(originalPolyIx);
+    const std::vector<std::string> userProperties = materials.GetUserProperties(originalPolyIx);
 
     int textures[RAW_TEXTURE_USAGE_MAX];
     std::fill_n(textures, (int)RAW_TEXTURE_USAGE_MAX, -1);
@@ -286,38 +347,39 @@ static void ReadMesh(
 
     RawVertex rawVertices[3];
     bool vertexTransparency = false;
-    for (int vertexIndex = 0; vertexIndex < 3; vertexIndex++, polygonVertexIndex++) {
-      const int controlPointIndex = pMesh->GetPolygonVertex(polygonIndex, vertexIndex);
+    for (int vertexIndex = 0; vertexIndex < 3; vertexIndex++) {
+      const int polygonVertexIndex = triangles[triIx].polyVertexIndices[vertexIndex];
+      const int controlPointIndex = allPolygonVertices[polygonVertexIndex];
 
       // Note that the default values here must be the same as the RawVertex default values!
       const FbxVector4 fbxPosition = transform.MultNormalize(controlPoints[controlPointIndex]);
       const FbxVector4 fbxNormal = normalLayer.GetElement(
-          polygonIndex,
+          originalPolyIx,
           polygonVertexIndex,
           controlPointIndex,
           FbxVector4(0.0f, 0.0f, 0.0f, 0.0f),
           inverseTransposeTransform,
           true);
       const FbxVector4 fbxTangent = tangentLayer.GetElement(
-          polygonIndex,
+          originalPolyIx,
           polygonVertexIndex,
           controlPointIndex,
           FbxVector4(0.0f, 0.0f, 0.0f, 0.0f),
           inverseTransposeTransform,
           true);
       const FbxVector4 fbxBinormal = binormalLayer.GetElement(
-          polygonIndex,
+          originalPolyIx,
           polygonVertexIndex,
           controlPointIndex,
           FbxVector4(0.0f, 0.0f, 0.0f, 0.0f),
           inverseTransposeTransform,
           true);
       const FbxColor fbxColor = colorLayer.GetElement(
-          polygonIndex, polygonVertexIndex, controlPointIndex, FbxColor(0.0f, 0.0f, 0.0f, 0.0f));
+          originalPolyIx, polygonVertexIndex, controlPointIndex, FbxColor(0.0f, 0.0f, 0.0f, 0.0f));
       const FbxVector2 fbxUV0 = uvLayer0.GetElement(
-          polygonIndex, polygonVertexIndex, controlPointIndex, FbxVector2(0.0f, 0.0f));
+          originalPolyIx, polygonVertexIndex, controlPointIndex, FbxVector2(0.0f, 0.0f));
       const FbxVector2 fbxUV1 = uvLayer1.GetElement(
-          polygonIndex, polygonVertexIndex, controlPointIndex, FbxVector2(0.0f, 0.0f));
+          originalPolyIx, polygonVertexIndex, controlPointIndex, FbxVector2(0.0f, 0.0f));
 
       RawVertex& vertex = rawVertices[vertexIndex];
       vertex.position[0] = (float)fbxPosition[0] * scaleFactor;
@@ -345,8 +407,8 @@ static void ReadMesh(
       vertex.jointWeights = skinning.GetVertexWeights(controlPointIndex);
       vertex.polarityUv0 = false;
 
-      // flag this triangle as transparent if any of its corner vertices substantially deviates from
-      // fully opaque
+      // flag this triangle as transparent if any of its corner vertices substantially deviates
+      // from fully opaque
       vertexTransparency |= colorLayer.LayerPresent() && (fabs(fbxColor.mAlpha - 1.0) > 1e-3);
 
       rawSurface.bounds.AddPoint(vertex.position);
@@ -361,7 +423,7 @@ static void ReadMesh(
           blendVertex.position = toVec3f(shapePosition - fbxPosition) * scaleFactor;
           if (targetShape->normals.LayerPresent()) {
             const FbxVector4& normal = targetShape->normals.GetElement(
-                polygonIndex,
+                originalPolyIx,
                 polygonVertexIndex,
                 controlPointIndex,
                 FbxVector4(0.0f, 0.0f, 0.0f, 0.0f),
@@ -371,7 +433,7 @@ static void ReadMesh(
           }
           if (targetShape->tangents.LayerPresent()) {
             const FbxVector4& tangent = targetShape->tangents.GetElement(
-                polygonIndex,
+                originalPolyIx,
                 polygonVertexIndex,
                 controlPointIndex,
                 FbxVector4(0.0f, 0.0f, 0.0f, 0.0f),
@@ -422,8 +484,8 @@ static void ReadMesh(
     }
 
     if (textures[RAW_TEXTURE_USAGE_NORMAL] != -1) {
-      // Distinguish vertices that are used by triangles with a different texture polarity to avoid
-      // degenerate tangent space smoothing.
+      // Distinguish vertices that are used by triangles with a different texture polarity to
+      // avoid degenerate tangent space smoothing.
       const bool polarity =
           TriangleTexturePolarity(rawVertices[0].uv0, rawVertices[1].uv0, rawVertices[2].uv0);
       rawVertices[0].polarityUv0 = polarity;
@@ -636,8 +698,9 @@ static void ReadNodeAttributes(
 }
 
 /**
- * Compute the local scale vector to use for a given node. This is an imperfect hack to cope with
- * the FBX node transform's eInheritRrs inheritance type, in which ancestral scale is ignored
+ * Compute the local scale vector to use for a given node. This is an imperfect hack to cope
+ * with the FBX node transform's eInheritRrs inheritance type, in which ancestral scale is
+ * ignored
  */
 static FbxVector4 computeLocalScale(FbxNode* pNode, FbxTime pTime = FBXSDK_TIME_INFINITE) {
   const FbxVector4 lScale = pNode->EvaluateLocalTransform(pTime).GetS();
@@ -647,9 +710,10 @@ static FbxVector4 computeLocalScale(FbxNode* pNode, FbxTime pTime = FBXSDK_TIME_
     return lScale;
   }
   // This is a very partial fix that is only correct for models that use identity scale in their
-  // rig's joints. We could write better support that compares local scale to parent's global scale
-  // and apply the ratio to our local translation. We'll always want to return scale 1, though --
-  // that's the only way to encode the missing 'S' (parent scale) in the transform chain.
+  // rig's joints. We could write better support that compares local scale to parent's global
+  // scale and apply the ratio to our local translation. We'll always want to return scale 1,
+  // though -- that's the only way to encode the missing 'S' (parent scale) in the transform
+  // chain.
   return FbxVector4(1, 1, 1, 1);
 }
 
@@ -863,9 +927,10 @@ static void ReadAnimations(RawModel& raw, FbxScene* pScene, const GltfOptions& o
 
             int targetCount = static_cast<int>(blendShapes.GetTargetShapeCount(channelIx));
 
-            // the target shape 'fullWeight' values are a strictly ascending list of floats (between
-            // 0 and 100), forming a sequence of intervals -- this convenience function figures out
-            // if 'p' lays between some certain target fullWeights, and if so where (from 0 to 1).
+            // the target shape 'fullWeight' values are a strictly ascending list of floats
+            // (between 0 and 100), forming a sequence of intervals -- this convenience function
+            // figures out if 'p' lays between some certain target fullWeights, and if so where
+            // (from 0 to 1).
             auto findInInterval = [&](const double p, const int n) {
               if (n >= targetCount) {
                 // p is certainly completely left of this interval

@@ -92,7 +92,7 @@ ModelData* Raw2Gltf(
     }
     if (raw.GetVertexCount() > 2 * raw.GetTriangleCount()) {
       fmt::printf(
-          "Warning: High vertex count. Make sure there are no unnecessary vertex attributes. (see -keepAttribute cmd-line option)");
+          "Warning: High vertex count. Make sure there are no unnecessary vertex attributes. (see -keepAttribute cmd-line option)\n");
     }
   }
 
@@ -496,8 +496,8 @@ ModelData* Raw2Gltf(
         }
         if ((surfaceModel.GetVertexAttributes() & RAW_VERTEX_ATTRIBUTE_TANGENT) != 0) {
           const AttributeDefinition<Vec4f> ATTR_TANGENT("TANGENT", &RawVertex::tangent, GLT_VEC4F);
-          const auto _ = gltf->AddAttributeToPrimitive<Vec4f>(
-              buffer, surfaceModel, *primitive, ATTR_TANGENT);
+          const auto _ =
+              gltf->AddAttributeToPrimitive<Vec4f>(buffer, surfaceModel, *primitive, ATTR_TANGENT);
         }
         if ((surfaceModel.GetVertexAttributes() & RAW_VERTEX_ATTRIBUTE_COLOR) != 0) {
           const AttributeDefinition<Vec4f> ATTR_COLOR(
@@ -632,7 +632,8 @@ ModelData* Raw2Gltf(
         draco::Status status = encoder.EncodeMeshToBuffer(*primitive->dracoMesh, &dracoBuffer);
         assert(status.code() == draco::Status::OK);
 
-        auto view = gltf->AddRawBufferView(buffer, dracoBuffer.data(), to_uint32(dracoBuffer.size()));
+        auto view =
+            gltf->AddRawBufferView(buffer, dracoBuffer.data(), to_uint32(dracoBuffer.size()));
         primitive->NoteDracoBuffer(*view);
       }
       mesh->AddPrimitive(primitive);
