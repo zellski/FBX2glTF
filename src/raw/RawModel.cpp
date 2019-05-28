@@ -26,8 +26,8 @@ bool RawVertex::operator==(const RawVertex& other) const {
   return (position == other.position) && (normal == other.normal) && (tangent == other.tangent) &&
       (binormal == other.binormal) && (color == other.color) && (uv0 == other.uv0) &&
       (uv1 == other.uv1) && (jointIndices == other.jointIndices) &&
-      (jointWeights == other.jointWeights) && (polarityUv0 == other.polarityUv0) &&
-      (blendSurfaceIx == other.blendSurfaceIx) && (blends == other.blends);
+      (jointWeights == other.jointWeights) && (blendSurfaceIx == other.blendSurfaceIx) &&
+      (blends == other.blends);
 }
 
 size_t RawVertex::Difference(const RawVertex& other) const {
@@ -79,14 +79,17 @@ int RawModel::AddVertex(const RawVertex& vertex) {
   return (int)vertices.size() - 1;
 }
 
-int RawModel::AddTriangle(
-    const int v0,
-    const int v1,
-    const int v2,
-    const int materialIndex,
-    const int surfaceIndex) {
-  const RawTriangle triangle = {{v0, v1, v2}, materialIndex, surfaceIndex};
-  triangles.push_back(triangle);
+int RawModel::AddPolygon(const int surfaceIndex) {
+  return AddPolygon(surfaceIndex, -1);
+}
+
+int RawModel::AddPolygon(const int surfaceIndex, const int materialIndex) {
+  polygons.push_back({surfaceIndex, materialIndex});
+  return (int)polygons.size() - 1;
+}
+
+int RawModel::AddTriangle(const int v0, const int v1, const int v2, const int polygonIndex) {
+  triangles.push_back({{v0, v1, v2}, polygonIndex});
   return (int)triangles.size() - 1;
 }
 
@@ -327,18 +330,33 @@ int RawModel::AddNode(const long id, const char* name, const long parentId) {
 }
 
 void RawModel::Condense() {
-  // Only keep surfaces that are referenced by one or more triangles.
+  // Only keep polygons that are referenced by one or more triangles.
+  {
+    std::vector<RawPolygon> oldPolygons = polygons;
+
+    polygons.clear();
+
+    std::set<int> survivingPolygonIds;
+    for (auto& triangle : triangles) {
+      const RawPolygon& polygon = oldPolygons[triangle.polygonIndex];
+      const int polygonIndex = AddPolygon(polygon.surfaceIndex, polygon.materialIndex);
+      polygons[polygonIndex] = polygon;
+      triangle.polygonIndex = polygonIndex;
+    }
+  }
+
+  // Only keep surfaces that are referenced by one or more polygons.
   {
     std::vector<RawSurface> oldSurfaces = surfaces;
 
     surfaces.clear();
 
     std::set<int> survivingSurfaceIds;
-    for (auto& triangle : triangles) {
-      const RawSurface& surface = oldSurfaces[triangle.surfaceIndex];
+    for (auto& polygon : polygons) {
+      const RawSurface& surface = oldSurfaces[polygon.surfaceIndex];
       const int surfaceIndex = AddSurface(surface.name.c_str(), surface.id);
       surfaces[surfaceIndex] = surface;
-      triangle.surfaceIndex = surfaceIndex;
+      polygon.surfaceIndex = surfaceIndex;
       survivingSurfaceIds.emplace(surface.id);
     }
     // clear out references to meshes that no longer exist
@@ -350,17 +368,17 @@ void RawModel::Condense() {
     }
   }
 
-  // Only keep materials that are referenced by one or more triangles.
+  // Only keep materials that are referenced by one or more polygons.
   {
     std::vector<RawMaterial> oldMaterials = materials;
 
     materials.clear();
 
-    for (auto& triangle : triangles) {
-      const RawMaterial& material = oldMaterials[triangle.materialIndex];
+    for (auto& polygon : polygons) {
+      const RawMaterial& material = oldMaterials[polygon.materialIndex];
       const int materialIndex = AddMaterial(material);
       materials[materialIndex] = material;
-      triangle.materialIndex = materialIndex;
+      polygon.materialIndex = materialIndex;
     }
   }
 
@@ -440,30 +458,6 @@ void RawModel::TransformTextures(const std::vector<std::function<Vec2f(Vec2f)>>&
   }
 }
 
-struct TriangleModelSortPos {
-  static bool Compare(const RawTriangle& a, const RawTriangle& b) {
-    if (a.materialIndex != b.materialIndex) {
-      return a.materialIndex < b.materialIndex;
-    }
-    if (a.surfaceIndex != b.surfaceIndex) {
-      return a.surfaceIndex < b.surfaceIndex;
-    }
-    return a.verts[0] < b.verts[0];
-  }
-};
-
-struct TriangleModelSortNeg {
-  static bool Compare(const RawTriangle& a, const RawTriangle& b) {
-    if (a.materialIndex != b.materialIndex) {
-      return a.materialIndex < b.materialIndex;
-    }
-    if (a.surfaceIndex != b.surfaceIndex) {
-      return a.surfaceIndex < b.surfaceIndex;
-    }
-    return a.verts[0] > b.verts[0];
-  }
-};
-
 void RawModel::CreateMaterialModels(
     std::vector<RawModel>& materialModels,
     bool shortIndices,
@@ -472,52 +466,64 @@ void RawModel::CreateMaterialModels(
   // Sort all triangles based on material first, then surface, then first vertex index.
   std::vector<RawTriangle> sortedTriangles;
 
-  bool invertedTransparencySort = true;
-  if (invertedTransparencySort) {
-    // Split the triangles into opaque and transparent triangles.
-    std::vector<RawTriangle> opaqueTriangles;
-    std::vector<RawTriangle> transparentTriangles;
-    for (const auto& triangle : triangles) {
-      const int materialIndex = triangle.materialIndex;
-      if (materialIndex < 0) {
-        opaqueTriangles.push_back(triangle);
-        continue;
-      }
-      const int textureIndex = materials[materialIndex].textures[RAW_TEXTURE_USAGE_DIFFUSE];
-      if (textureIndex < 0) {
-        if (vertices[triangle.verts[0]].color.w < 1.0f ||
-            vertices[triangle.verts[1]].color.w < 1.0f ||
-            vertices[triangle.verts[2]].color.w < 1.0f) {
-          transparentTriangles.push_back(triangle);
-          continue;
-        }
-        opaqueTriangles.push_back(triangle);
-        continue;
-      }
-      if (textures[textureIndex].occlusion == RAW_TEXTURE_OCCLUSION_TRANSPARENT) {
+  // Split the triangles into opaque and transparent triangles.
+  std::vector<RawTriangle> opaqueTriangles;
+  std::vector<RawTriangle> transparentTriangles;
+  for (const auto& triangle : triangles) {
+    const int materialIndex = GetMaterialIndex(triangle);
+    if (materialIndex < 0) {
+      opaqueTriangles.push_back(triangle);
+      continue;
+    }
+    const int textureIndex = materials[materialIndex].textures[RAW_TEXTURE_USAGE_DIFFUSE];
+    if (textureIndex < 0) {
+      if (vertices[triangle.verts[0]].color.w < 1.0f ||
+          vertices[triangle.verts[1]].color.w < 1.0f ||
+          vertices[triangle.verts[2]].color.w < 1.0f) {
         transparentTriangles.push_back(triangle);
-      } else {
-        opaqueTriangles.push_back(triangle);
+        continue;
       }
+      opaqueTriangles.push_back(triangle);
+      continue;
     }
-
-    // Sort the opaque triangles.
-    std::sort(opaqueTriangles.begin(), opaqueTriangles.end(), TriangleModelSortPos::Compare);
-
-    // Sort the transparent triangles in the reverse direction.
-    std::sort(
-        transparentTriangles.begin(), transparentTriangles.end(), TriangleModelSortNeg::Compare);
-
-    // Add the triangles to the sorted list.
-    for (const auto& opaqueTriangle : opaqueTriangles) {
-      sortedTriangles.push_back(opaqueTriangle);
+    if (textures[textureIndex].occlusion == RAW_TEXTURE_OCCLUSION_TRANSPARENT) {
+      transparentTriangles.push_back(triangle);
+    } else {
+      opaqueTriangles.push_back(triangle);
     }
-    for (const auto& transparentTriangle : transparentTriangles) {
-      sortedTriangles.push_back(transparentTriangle);
+  }
+
+  // TODO TODO
+  // TODO TODO
+  // TODO TODO
+  // TODO TODO
+  bool ngonPreservingMode = true;
+
+  const auto& ComparePos = [&](const RawTriangle& a, const RawTriangle& b) -> bool {
+    if (GetMaterialIndex(a) != GetMaterialIndex(b)) {
+      return GetMaterialIndex(a) < GetMaterialIndex(b);
     }
-  } else {
-    sortedTriangles = triangles;
-    std::sort(sortedTriangles.begin(), sortedTriangles.end(), TriangleModelSortPos::Compare);
+    if (GetSurfaceIndex(a) != GetSurfaceIndex(b)) {
+      return GetSurfaceIndex(a) < GetSurfaceIndex(b);
+    }
+    return ngonPreservingMode ? (a.polygonIndex < b.polygonIndex) : (a.verts[0] < b.verts[0]);
+  };
+  const auto& CompareNeg = [&](const RawTriangle& a, const RawTriangle& b) -> bool {
+    return !ComparePos(a, b);
+  };
+
+  // Sort the opaque triangles.
+  std::stable_sort(opaqueTriangles.begin(), opaqueTriangles.end(), ComparePos);
+
+  // Sort the transparent triangles in the reverse direction.
+  std::stable_sort(transparentTriangles.begin(), transparentTriangles.end(), CompareNeg);
+
+  // Add the triangles to the sorted list.
+  for (const auto& opaqueTriangle : opaqueTriangles) {
+    sortedTriangles.push_back(opaqueTriangle);
+  }
+  for (const auto& transparentTriangle : transparentTriangles) {
+    sortedTriangles.push_back(transparentTriangle);
   }
 
   // Overestimate the number of models that will be created to avoid massive reallocation.
@@ -533,16 +539,24 @@ void RawModel::CreateMaterialModels(
 
   // Create a separate model for each material.
   RawModel* model;
+  int polygonIndex = -1;
+  int newMaterialIndex = -1;
+  int newSurfaceIndex = -1;
+  RawSurface* rawSurface;
   for (size_t i = 0; i < sortedTriangles.size(); i++) {
-    if (sortedTriangles[i].materialIndex < 0 || sortedTriangles[i].surfaceIndex < 0) {
+    int materialIx = GetMaterialIndex(sortedTriangles[i]);
+    int surfaceIx = GetSurfaceIndex(sortedTriangles[i]);
+    if (materialIx < 0 || surfaceIx < 0) {
       continue;
     }
 
+    int lastMaterialIx = GetMaterialIndex(sortedTriangles[i - 1]);
+    int lastSurfaceIx = GetSurfaceIndex(sortedTriangles[i - 1]);
+
     if (i == 0 || (shortIndices && model->GetVertexCount() >= 0xFFFE) ||
-        sortedTriangles[i].materialIndex != sortedTriangles[i - 1].materialIndex ||
-        (sortedTriangles[i].surfaceIndex != sortedTriangles[i - 1].surfaceIndex &&
-         (forceDiscrete || surfaces[sortedTriangles[i].surfaceIndex].discrete ||
-          surfaces[sortedTriangles[i - 1].surfaceIndex].discrete))) {
+        (materialIx != lastMaterialIx) ||
+        ((surfaceIx != lastSurfaceIx) &&
+         (forceDiscrete || IsDiscrete(sortedTriangles[i]) || IsDiscrete(sortedTriangles[i - 1])))) {
       materialModels.resize(materialModels.size() + 1);
       model = &materialModels[materialModels.size() - 1];
     }
@@ -550,19 +564,22 @@ void RawModel::CreateMaterialModels(
     // FIXME: will have to unlink from the nodes, transform both surfaces into a
     // common space, and reparent to a new node with appropriate transform.
 
-    const int prevSurfaceCount = model->GetSurfaceCount();
-    const int materialIndex = model->AddMaterial(materials[sortedTriangles[i].materialIndex]);
-    const int surfaceIndex = model->AddSurface(surfaces[sortedTriangles[i].surfaceIndex]);
-    RawSurface& rawSurface = model->GetSurface(surfaceIndex);
+    if (i == 0 || (sortedTriangles[i].polygonIndex != sortedTriangles[i - 1].polygonIndex)) {
+      const int prevSurfaceCount = model->GetSurfaceCount();
+      newMaterialIndex = model->AddMaterial(materials[materialIx]);
+      newSurfaceIndex = model->AddSurface(surfaces[surfaceIx]);
+      rawSurface = &model->GetSurface(newSurfaceIndex);
 
-    if (model->GetSurfaceCount() > prevSurfaceCount) {
-      const std::vector<long>& jointIds = surfaces[sortedTriangles[i].surfaceIndex].jointIds;
-      for (const auto& jointId : jointIds) {
-        const int nodeIndex = GetNodeById(jointId);
-        assert(nodeIndex != -1);
-        model->AddNode(GetNode(nodeIndex));
+      if (model->GetSurfaceCount() > prevSurfaceCount) {
+        const std::vector<long>& jointIds = surfaces[surfaceIx].jointIds;
+        for (const auto& jointId : jointIds) {
+          const int nodeIndex = GetNodeById(jointId);
+          assert(nodeIndex != -1);
+          model->AddNode(GetNode(nodeIndex));
+        }
+        rawSurface->bounds.Clear();
       }
-      rawSurface.bounds.Clear();
+      polygonIndex = model->AddPolygon(newSurfaceIndex, newMaterialIndex);
     }
 
     int verts[3];
@@ -577,7 +594,7 @@ void RawModel::CreateMaterialModels(
         if ((keepAttribs & RAW_VERTEX_ATTRIBUTE_AUTO) != 0) {
           keep |= RAW_VERTEX_ATTRIBUTE_POSITION;
 
-          const RawMaterial& mat = model->GetMaterial(materialIndex);
+          const RawMaterial& mat = model->GetMaterial(newMaterialIndex);
           if (mat.textures[RAW_TEXTURE_USAGE_DIFFUSE] != -1) {
             keep |= RAW_VERTEX_ATTRIBUTE_UV0;
           }
@@ -624,10 +641,11 @@ void RawModel::CreateMaterialModels(
       verts[j] = model->AddVertex(vertex);
       model->vertexAttributes |= vertex.Difference(defaultVertex);
 
-      rawSurface.bounds.AddPoint(vertex.position);
+      rawSurface->bounds.AddPoint(vertex.position);
     }
 
-    model->AddTriangle(verts[0], verts[1], verts[2], materialIndex, surfaceIndex);
+    assert(polygonIndex >= 0);
+    model->AddTriangle(verts[0], verts[1], verts[2], polygonIndex);
   }
 }
 

@@ -39,8 +39,6 @@ struct RawBlendVertex {
 };
 
 struct RawVertex {
-  RawVertex() : polarityUv0(false), pad1(false), pad2(false), pad3(false) {}
-
   Vec3f position{0.0f};
   Vec3f normal{0.0f};
   Vec3f binormal{0.0f};
@@ -59,11 +57,6 @@ struct RawVertex {
   // RawSurface.blendChannels
   std::vector<RawBlendVertex> blends{};
 
-  bool polarityUv0;
-  bool pad1;
-  bool pad2;
-  bool pad3;
-
   bool operator==(const RawVertex& other) const;
   size_t Difference(const RawVertex& other) const;
 };
@@ -80,10 +73,14 @@ class VertexHasher {
   }
 };
 
+struct RawPolygon {
+  int surfaceIndex;
+  int materialIndex;
+};
+
 struct RawTriangle {
   int verts[3];
-  int materialIndex;
-  int surfaceIndex;
+  int polygonIndex;
 };
 
 enum RawShadingModel {
@@ -361,12 +358,9 @@ class RawModel {
   // Add geometry.
   void AddVertexAttribute(const RawVertexAttribute attrib);
   int AddVertex(const RawVertex& vertex);
-  int AddTriangle(
-      const int v0,
-      const int v1,
-      const int v2,
-      const int materialIndex,
-      const int surfaceIndex);
+  int AddTriangle(const int v0, const int v1, const int v2, const int polygonIndex);
+  int AddPolygon(const int surfaceIndex);
+  int AddPolygon(const int surfaceIndex, const int materialIndex);
   int AddTexture(
       const std::string& name,
       const std::string& fileName,
@@ -443,6 +437,20 @@ class RawModel {
   }
   const RawTriangle& GetTriangle(const int index) const {
     return triangles[index];
+  }
+
+  const RawPolygon& GetPolygon(const int index) const {
+    return polygons[index];
+  }
+
+  const int GetMaterialIndex(const RawTriangle& triangle) const {
+    return polygons[triangle.polygonIndex].materialIndex;
+  }
+  const int GetSurfaceIndex(const RawTriangle& triangle) const {
+    return polygons[triangle.polygonIndex].surfaceIndex;
+  }
+  const bool IsDiscrete(const RawTriangle& triangle) const {
+    return surfaces[GetSurfaceIndex(triangle)].discrete;
   }
 
   // Iterate over the textures.
@@ -532,6 +540,7 @@ class RawModel {
   std::unordered_map<RawVertex, int, VertexHasher> vertexHash;
   std::vector<RawVertex> vertices;
   std::vector<RawTriangle> triangles;
+  std::vector<RawPolygon> polygons;
   std::vector<RawTexture> textures;
   std::vector<RawMaterial> materials;
   std::vector<RawLight> lights;

@@ -21,495 +21,20 @@
 #include <vector>
 
 #include "FBX2glTF.h"
+#include "FbxMesh2Raw.hpp"
 
 #include "raw/RawModel.hpp"
 #include "utils/File_Utils.hpp"
 #include "utils/String_Utils.hpp"
 
-#include "FbxBlendShapesAccess.hpp"
-#include "FbxLayerElementAccess.hpp"
-#include "FbxSkinningAccess.hpp"
-#include "materials/RoughnessMetallicMaterials.hpp"
-#include "materials/TraditionalMaterials.hpp"
-
 float scaleFactor;
-
-static bool TriangleTexturePolarity(const Vec2f& uv0, const Vec2f& uv1, const Vec2f& uv2) {
-  const Vec2f d0 = uv1 - uv0;
-  const Vec2f d1 = uv2 - uv0;
-
-  return (d0[0] * d1[1] - d0[1] * d1[0] < 0.0f);
-}
-
-static RawMaterialType GetMaterialType(
-    const RawModel& raw,
-    const int textures[RAW_TEXTURE_USAGE_MAX],
-    const bool vertexTransparency,
-    const bool skinned) {
-  // DIFFUSE and ALBEDO are different enough to represent distinctly, but they both help determine
-  // transparency.
-  int diffuseTexture = textures[RAW_TEXTURE_USAGE_DIFFUSE];
-  if (diffuseTexture < 0) {
-    diffuseTexture = textures[RAW_TEXTURE_USAGE_ALBEDO];
-  }
-  // determine material type based on texture occlusion.
-  if (diffuseTexture >= 0) {
-    return (raw.GetTexture(diffuseTexture).occlusion == RAW_TEXTURE_OCCLUSION_OPAQUE)
-        ? (skinned ? RAW_MATERIAL_TYPE_SKINNED_OPAQUE : RAW_MATERIAL_TYPE_OPAQUE)
-        : (skinned ? RAW_MATERIAL_TYPE_SKINNED_TRANSPARENT : RAW_MATERIAL_TYPE_TRANSPARENT);
-  }
-
-  // else if there is any vertex transparency, treat whole mesh as transparent
-  if (vertexTransparency) {
-    return skinned ? RAW_MATERIAL_TYPE_SKINNED_TRANSPARENT : RAW_MATERIAL_TYPE_TRANSPARENT;
-  }
-
-  // Default to simply opaque.
-  return skinned ? RAW_MATERIAL_TYPE_SKINNED_OPAQUE : RAW_MATERIAL_TYPE_OPAQUE;
-}
 
 static void ReadMesh(
     RawModel& raw,
     FbxScene* pScene,
     FbxNode* pNode,
     const std::map<const FbxTexture*, FbxString>& textureLocations) {
-  const bool shouldTriangulateQuads = false;
-
-  struct Triangle {
-    int originalPolyIndex;
-    int polyVertexIndices[3];
-  };
-
-  FbxMesh* pMesh = pNode->GetMesh();
-
-  std::vector<Triangle> triangles;
-  if (shouldTriangulateQuads &&
-      pNode->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::eMesh) {
-    // TODO before commit: shorten some of these variable names consistently across the file
-    int polyCount[20] = {0};
-    for (int polygonIndex = 0; polygonIndex < pMesh->GetPolygonCount(); polygonIndex++) {
-      polyCount[std::min(pMesh->GetPolygonSize(polygonIndex), 20)]++;
-    }
-    fmt::printf(
-        "Before triangulation:\nThere are %d polys and %d control points.\n",
-        pMesh->GetPolygonCount(),
-        pMesh->GetControlPointsCount());
-    for (int i = 0; i < 20; i++) {
-      if (polyCount[i] > 0) {
-        fmt::printf("Polygon<%d> count: %d\n", i, polyCount[i]);
-      }
-    }
-
-    // FbxGeometryConverter meshConverter(pScene->GetFbxManager());
-    // meshConverter.Triangulate(pNode->GetNodeAttribute(), true);
-    // pMesh = pNode->GetMesh();
-    // fmt::printf(
-    //     "After triangulation, there are %d tris and %d control points.\n",
-    //     pMesh->GetPolygonCount(),
-    //     pMesh->GetControlPointsCount());
-    int* allPolygonVertices = pMesh->GetPolygonVertices();
-    int anchorIndex = -1;
-    for (int polygonIndex = 0; polygonIndex < pMesh->GetPolygonCount(); polygonIndex++) {
-      int polyVertexCount = pMesh->GetPolygonSize(polygonIndex);
-      int polyVertexStart = pMesh->GetPolygonVertexIndex(polygonIndex);
-      int offset = (anchorIndex == allPolygonVertices[polyVertexCount]) ? 1 : 0;
-      anchorIndex = allPolygonVertices[polyVertexStart + offset];
-      for (int vertexIndex = offset + 2; vertexIndex < offset + polyVertexCount; vertexIndex++) {
-        int firstTriIndex = vertexIndex - 1;
-        int otherTriIndex = vertexIndex % polyVertexCount;
-        triangles.push_back({polygonIndex,
-                             polyVertexStart + offset,
-                             polyVertexStart + firstTriIndex,
-                             polyVertexStart + otherTriIndex});
-      }
-    }
-    fmt::printf("After triangulation, there are %d tris.\n", triangles.size());
-  } else {
-    FbxGeometryConverter meshConverter(pScene->GetFbxManager());
-    meshConverter.Triangulate(pNode->GetNodeAttribute(), true);
-    pMesh = pNode->GetMesh();
-    int polygonVertexIndex = 0;
-    for (int polygonIndex = 0; polygonIndex < pMesh->GetPolygonCount(); polygonIndex++) {
-      FBX_ASSERT(pMesh->GetPolygonSize(polygonIndex) == 3);
-      triangles.push_back(
-          {polygonIndex, polygonVertexIndex + 0, polygonVertexIndex + 1, polygonVertexIndex + 2});
-      polygonVertexIndex += 3;
-    }
-  }
-
-  // Obtains the surface Id
-  const long surfaceId = pMesh->GetUniqueID();
-
-  // Associate the node to this surface
-  int nodeId = raw.GetNodeById(pNode->GetUniqueID());
-  if (nodeId >= 0) {
-    RawNode& node = raw.GetNode(nodeId);
-    node.surfaceId = surfaceId;
-  }
-
-  if (raw.GetSurfaceById(surfaceId) >= 0) {
-    // This surface is already loaded
-    return;
-  }
-
-  int* allPolygonVertices = pMesh->GetPolygonVertices();
-
-  const char* meshName = (pNode->GetName()[0] != '\0') ? pNode->GetName() : pMesh->GetName();
-  const int rawSurfaceIndex = raw.AddSurface(meshName, surfaceId);
-
-  const FbxVector4* controlPoints = pMesh->GetControlPoints();
-  const FbxLayerElementAccess<FbxVector4> normalLayer(
-      pMesh->GetElementNormal(), pMesh->GetElementNormalCount());
-  const FbxLayerElementAccess<FbxVector4> binormalLayer(
-      pMesh->GetElementBinormal(), pMesh->GetElementBinormalCount());
-  const FbxLayerElementAccess<FbxVector4> tangentLayer(
-      pMesh->GetElementTangent(), pMesh->GetElementTangentCount());
-  const FbxLayerElementAccess<FbxColor> colorLayer(
-      pMesh->GetElementVertexColor(), pMesh->GetElementVertexColorCount());
-  const FbxLayerElementAccess<FbxVector2> uvLayer0(
-      pMesh->GetElementUV(0), pMesh->GetElementUVCount());
-  const FbxLayerElementAccess<FbxVector2> uvLayer1(
-      pMesh->GetElementUV(1), pMesh->GetElementUVCount());
-  const FbxSkinningAccess skinning(pMesh, pScene, pNode);
-  const FbxMaterialsAccess materials(pMesh, textureLocations);
-  const FbxBlendShapesAccess blendShapes(pMesh);
-
-  if (verboseOutput) {
-    fmt::printf(
-        "mesh %d: %s (skinned: %s)\n",
-        rawSurfaceIndex,
-        meshName,
-        skinning.IsSkinned() ? raw.GetNode(raw.GetNodeById(skinning.GetRootNode())).name.c_str()
-                             : "NO");
-  }
-
-  // The FbxNode geometric transformation describes how a FbxNodeAttribute is offset from
-  // the FbxNode's local frame of reference. These geometric transforms are applied to the
-  // FbxNodeAttribute after the FbxNode's local transforms are computed, and are not
-  // inherited across the node hierarchy.
-  // Apply the geometric transform to the mesh geometry (vertices, normal etc.) because
-  // glTF does not have an equivalent to the geometric transform.
-  const FbxVector4 meshTranslation = pNode->GetGeometricTranslation(FbxNode::eSourcePivot);
-  const FbxVector4 meshRotation = pNode->GetGeometricRotation(FbxNode::eSourcePivot);
-  const FbxVector4 meshScaling = pNode->GetGeometricScaling(FbxNode::eSourcePivot);
-  const FbxAMatrix meshTransform(meshTranslation, meshRotation, meshScaling);
-  const FbxMatrix transform = meshTransform;
-
-  // Remove translation & scaling from transforms that will bi applied to normals, tangents &
-  // binormals
-  const FbxMatrix normalTransform(FbxVector4(), meshRotation, meshScaling);
-  const FbxMatrix inverseTransposeTransform = normalTransform.Inverse().Transpose();
-
-  raw.AddVertexAttribute(RAW_VERTEX_ATTRIBUTE_POSITION);
-  if (normalLayer.LayerPresent()) {
-    raw.AddVertexAttribute(RAW_VERTEX_ATTRIBUTE_NORMAL);
-  }
-  if (tangentLayer.LayerPresent()) {
-    raw.AddVertexAttribute(RAW_VERTEX_ATTRIBUTE_TANGENT);
-  }
-  if (binormalLayer.LayerPresent()) {
-    raw.AddVertexAttribute(RAW_VERTEX_ATTRIBUTE_BINORMAL);
-  }
-  if (colorLayer.LayerPresent()) {
-    raw.AddVertexAttribute(RAW_VERTEX_ATTRIBUTE_COLOR);
-  }
-  if (uvLayer0.LayerPresent()) {
-    raw.AddVertexAttribute(RAW_VERTEX_ATTRIBUTE_UV0);
-  }
-  if (uvLayer1.LayerPresent()) {
-    raw.AddVertexAttribute(RAW_VERTEX_ATTRIBUTE_UV1);
-  }
-  if (skinning.IsSkinned()) {
-    raw.AddVertexAttribute(RAW_VERTEX_ATTRIBUTE_JOINT_WEIGHTS);
-    raw.AddVertexAttribute(RAW_VERTEX_ATTRIBUTE_JOINT_INDICES);
-  }
-
-  RawSurface& rawSurface = raw.GetSurface(rawSurfaceIndex);
-
-  Mat4f scaleMatrix = Mat4f::FromScaleVector(Vec3f(scaleFactor, scaleFactor, scaleFactor));
-  Mat4f invScaleMatrix = scaleMatrix.Inverse();
-
-  rawSurface.skeletonRootId =
-      (skinning.IsSkinned()) ? skinning.GetRootNode() : pNode->GetUniqueID();
-  for (int jointIndex = 0; jointIndex < skinning.GetNodeCount(); jointIndex++) {
-    const long jointId = skinning.GetJointId(jointIndex);
-    raw.GetNode(raw.GetNodeById(jointId)).isJoint = true;
-
-    rawSurface.jointIds.emplace_back(jointId);
-    rawSurface.inverseBindMatrices.push_back(
-        invScaleMatrix * toMat4f(skinning.GetInverseBindMatrix(jointIndex)) * scaleMatrix);
-    rawSurface.jointGeometryMins.emplace_back(FLT_MAX, FLT_MAX, FLT_MAX);
-    rawSurface.jointGeometryMaxs.emplace_back(-FLT_MAX, -FLT_MAX, -FLT_MAX);
-  }
-
-  rawSurface.blendChannels.clear();
-  std::vector<const FbxBlendShapesAccess::TargetShape*> targetShapes;
-  for (size_t channelIx = 0; channelIx < blendShapes.GetChannelCount(); channelIx++) {
-    for (size_t targetIx = 0; targetIx < blendShapes.GetTargetShapeCount(channelIx); targetIx++) {
-      const FbxBlendShapesAccess::TargetShape& shape =
-          blendShapes.GetTargetShape(channelIx, targetIx);
-      targetShapes.push_back(&shape);
-      auto& blendChannel = blendShapes.GetBlendChannel(channelIx);
-
-      rawSurface.blendChannels.push_back(
-          RawBlendChannel{static_cast<float>(blendChannel.deformPercent),
-                          shape.normals.LayerPresent(),
-                          shape.tangents.LayerPresent(),
-                          blendChannel.name});
-    }
-  }
-
-  for (int triIx = 0; triIx < triangles.size(); triIx++) {
-    int originalPolyIx = triangles[triIx].originalPolyIndex;
-    const std::shared_ptr<FbxMaterialInfo> fbxMaterial = materials.GetMaterial(originalPolyIx);
-    const std::vector<std::string> userProperties = materials.GetUserProperties(originalPolyIx);
-
-    int textures[RAW_TEXTURE_USAGE_MAX];
-    std::fill_n(textures, (int)RAW_TEXTURE_USAGE_MAX, -1);
-
-    std::shared_ptr<RawMatProps> rawMatProps;
-    FbxString materialName;
-    long materialId;
-
-    if (fbxMaterial == nullptr) {
-      materialName = "DefaultMaterial";
-      materialId = -1;
-      rawMatProps.reset(new RawTraditionalMatProps(
-          RAW_SHADING_MODEL_LAMBERT,
-          Vec3f(0, 0, 0),
-          Vec4f(.5, .5, .5, 1),
-          Vec3f(0, 0, 0),
-          Vec3f(0, 0, 0),
-          0.5));
-
-    } else {
-      materialName = fbxMaterial->name;
-      materialId = fbxMaterial->id;
-
-      const auto maybeAddTexture = [&](const FbxFileTexture* tex, RawTextureUsage usage) {
-        if (tex != nullptr) {
-          // dig out the inferred filename from the textureLocations map
-          FbxString inferredPath = textureLocations.find(tex)->second;
-          textures[usage] =
-              raw.AddTexture(tex->GetName(), tex->GetFileName(), inferredPath.Buffer(), usage);
-        }
-      };
-
-      std::shared_ptr<RawMatProps> matInfo;
-      if (fbxMaterial->shadingModel == FbxRoughMetMaterialInfo::FBX_SHADER_METROUGH) {
-        FbxRoughMetMaterialInfo* fbxMatInfo =
-            static_cast<FbxRoughMetMaterialInfo*>(fbxMaterial.get());
-
-        maybeAddTexture(fbxMatInfo->texBaseColor, RAW_TEXTURE_USAGE_ALBEDO);
-        maybeAddTexture(fbxMatInfo->texNormal, RAW_TEXTURE_USAGE_NORMAL);
-        maybeAddTexture(fbxMatInfo->texEmissive, RAW_TEXTURE_USAGE_EMISSIVE);
-        maybeAddTexture(fbxMatInfo->texRoughness, RAW_TEXTURE_USAGE_ROUGHNESS);
-        maybeAddTexture(fbxMatInfo->texMetallic, RAW_TEXTURE_USAGE_METALLIC);
-        maybeAddTexture(fbxMatInfo->texAmbientOcclusion, RAW_TEXTURE_USAGE_OCCLUSION);
-        rawMatProps.reset(new RawMetRoughMatProps(
-            RAW_SHADING_MODEL_PBR_MET_ROUGH,
-            toVec4f(fbxMatInfo->baseColor),
-            toVec3f(fbxMatInfo->emissive),
-            fbxMatInfo->emissiveIntensity,
-            fbxMatInfo->metallic,
-            fbxMatInfo->roughness,
-            fbxMatInfo->invertRoughnessMap));
-      } else {
-        FbxTraditionalMaterialInfo* fbxMatInfo =
-            static_cast<FbxTraditionalMaterialInfo*>(fbxMaterial.get());
-        RawShadingModel shadingModel;
-        if (fbxMaterial->shadingModel == "Lambert") {
-          shadingModel = RAW_SHADING_MODEL_LAMBERT;
-        } else if (0 == fbxMaterial->shadingModel.CompareNoCase("Blinn")) {
-          shadingModel = RAW_SHADING_MODEL_BLINN;
-        } else if (0 == fbxMaterial->shadingModel.CompareNoCase("Phong")) {
-          shadingModel = RAW_SHADING_MODEL_PHONG;
-        } else if (0 == fbxMaterial->shadingModel.CompareNoCase("Constant")) {
-          shadingModel = RAW_SHADING_MODEL_PHONG;
-        } else {
-          shadingModel = RAW_SHADING_MODEL_UNKNOWN;
-        }
-        maybeAddTexture(fbxMatInfo->texDiffuse, RAW_TEXTURE_USAGE_DIFFUSE);
-        maybeAddTexture(fbxMatInfo->texNormal, RAW_TEXTURE_USAGE_NORMAL);
-        maybeAddTexture(fbxMatInfo->texEmissive, RAW_TEXTURE_USAGE_EMISSIVE);
-        maybeAddTexture(fbxMatInfo->texShininess, RAW_TEXTURE_USAGE_SHININESS);
-        maybeAddTexture(fbxMatInfo->texAmbient, RAW_TEXTURE_USAGE_AMBIENT);
-        maybeAddTexture(fbxMatInfo->texSpecular, RAW_TEXTURE_USAGE_SPECULAR);
-        rawMatProps.reset(new RawTraditionalMatProps(
-            shadingModel,
-            toVec3f(fbxMatInfo->colAmbient),
-            toVec4f(fbxMatInfo->colDiffuse),
-            toVec3f(fbxMatInfo->colEmissive),
-            toVec3f(fbxMatInfo->colSpecular),
-            fbxMatInfo->shininess));
-      }
-    }
-
-    RawVertex rawVertices[3];
-    bool vertexTransparency = false;
-    for (int vertexIndex = 0; vertexIndex < 3; vertexIndex++) {
-      const int polygonVertexIndex = triangles[triIx].polyVertexIndices[vertexIndex];
-      const int controlPointIndex = allPolygonVertices[polygonVertexIndex];
-
-      // Note that the default values here must be the same as the RawVertex default values!
-      const FbxVector4 fbxPosition = transform.MultNormalize(controlPoints[controlPointIndex]);
-      const FbxVector4 fbxNormal = normalLayer.GetElement(
-          originalPolyIx,
-          polygonVertexIndex,
-          controlPointIndex,
-          FbxVector4(0.0f, 0.0f, 0.0f, 0.0f),
-          inverseTransposeTransform,
-          true);
-      const FbxVector4 fbxTangent = tangentLayer.GetElement(
-          originalPolyIx,
-          polygonVertexIndex,
-          controlPointIndex,
-          FbxVector4(0.0f, 0.0f, 0.0f, 0.0f),
-          inverseTransposeTransform,
-          true);
-      const FbxVector4 fbxBinormal = binormalLayer.GetElement(
-          originalPolyIx,
-          polygonVertexIndex,
-          controlPointIndex,
-          FbxVector4(0.0f, 0.0f, 0.0f, 0.0f),
-          inverseTransposeTransform,
-          true);
-      const FbxColor fbxColor = colorLayer.GetElement(
-          originalPolyIx, polygonVertexIndex, controlPointIndex, FbxColor(0.0f, 0.0f, 0.0f, 0.0f));
-      const FbxVector2 fbxUV0 = uvLayer0.GetElement(
-          originalPolyIx, polygonVertexIndex, controlPointIndex, FbxVector2(0.0f, 0.0f));
-      const FbxVector2 fbxUV1 = uvLayer1.GetElement(
-          originalPolyIx, polygonVertexIndex, controlPointIndex, FbxVector2(0.0f, 0.0f));
-
-      RawVertex& vertex = rawVertices[vertexIndex];
-      vertex.position[0] = (float)fbxPosition[0] * scaleFactor;
-      vertex.position[1] = (float)fbxPosition[1] * scaleFactor;
-      vertex.position[2] = (float)fbxPosition[2] * scaleFactor;
-      vertex.normal[0] = (float)fbxNormal[0];
-      vertex.normal[1] = (float)fbxNormal[1];
-      vertex.normal[2] = (float)fbxNormal[2];
-      vertex.tangent[0] = (float)fbxTangent[0];
-      vertex.tangent[1] = (float)fbxTangent[1];
-      vertex.tangent[2] = (float)fbxTangent[2];
-      vertex.tangent[3] = (float)fbxTangent[3];
-      vertex.binormal[0] = (float)fbxBinormal[0];
-      vertex.binormal[1] = (float)fbxBinormal[1];
-      vertex.binormal[2] = (float)fbxBinormal[2];
-      vertex.color[0] = (float)fbxColor.mRed;
-      vertex.color[1] = (float)fbxColor.mGreen;
-      vertex.color[2] = (float)fbxColor.mBlue;
-      vertex.color[3] = (float)fbxColor.mAlpha;
-      vertex.uv0[0] = (float)fbxUV0[0];
-      vertex.uv0[1] = (float)fbxUV0[1];
-      vertex.uv1[0] = (float)fbxUV1[0];
-      vertex.uv1[1] = (float)fbxUV1[1];
-      vertex.jointIndices = skinning.GetVertexIndices(controlPointIndex);
-      vertex.jointWeights = skinning.GetVertexWeights(controlPointIndex);
-      vertex.polarityUv0 = false;
-
-      // flag this triangle as transparent if any of its corner vertices substantially deviates
-      // from fully opaque
-      vertexTransparency |= colorLayer.LayerPresent() && (fabs(fbxColor.mAlpha - 1.0) > 1e-3);
-
-      rawSurface.bounds.AddPoint(vertex.position);
-
-      if (!targetShapes.empty()) {
-        vertex.blendSurfaceIx = rawSurfaceIndex;
-        for (const auto* targetShape : targetShapes) {
-          RawBlendVertex blendVertex;
-          // the morph target data must be transformed just as with the vertex positions above
-          const FbxVector4& shapePosition =
-              transform.MultNormalize(targetShape->positions[controlPointIndex]);
-          blendVertex.position = toVec3f(shapePosition - fbxPosition) * scaleFactor;
-          if (targetShape->normals.LayerPresent()) {
-            const FbxVector4& normal = targetShape->normals.GetElement(
-                originalPolyIx,
-                polygonVertexIndex,
-                controlPointIndex,
-                FbxVector4(0.0f, 0.0f, 0.0f, 0.0f),
-                inverseTransposeTransform,
-                true);
-            blendVertex.normal = toVec3f(normal - fbxNormal);
-          }
-          if (targetShape->tangents.LayerPresent()) {
-            const FbxVector4& tangent = targetShape->tangents.GetElement(
-                originalPolyIx,
-                polygonVertexIndex,
-                controlPointIndex,
-                FbxVector4(0.0f, 0.0f, 0.0f, 0.0f),
-                inverseTransposeTransform,
-                true);
-            blendVertex.tangent = toVec4f(tangent - fbxTangent);
-          }
-          vertex.blends.push_back(blendVertex);
-        }
-      } else {
-        vertex.blendSurfaceIx = -1;
-      }
-
-      if (skinning.IsSkinned()) {
-        const int jointIndices[FbxSkinningAccess::MAX_WEIGHTS] = {vertex.jointIndices[0],
-                                                                  vertex.jointIndices[1],
-                                                                  vertex.jointIndices[2],
-                                                                  vertex.jointIndices[3]};
-        const float jointWeights[FbxSkinningAccess::MAX_WEIGHTS] = {vertex.jointWeights[0],
-                                                                    vertex.jointWeights[1],
-                                                                    vertex.jointWeights[2],
-                                                                    vertex.jointWeights[3]};
-        const FbxMatrix skinningMatrix =
-            skinning.GetJointSkinningTransform(jointIndices[0]) * jointWeights[0] +
-            skinning.GetJointSkinningTransform(jointIndices[1]) * jointWeights[1] +
-            skinning.GetJointSkinningTransform(jointIndices[2]) * jointWeights[2] +
-            skinning.GetJointSkinningTransform(jointIndices[3]) * jointWeights[3];
-
-        const FbxVector4 globalPosition = skinningMatrix.MultNormalize(fbxPosition);
-        for (int i = 0; i < FbxSkinningAccess::MAX_WEIGHTS; i++) {
-          if (jointWeights[i] > 0.0f) {
-            const FbxVector4 localPosition =
-                skinning.GetJointInverseGlobalTransforms(jointIndices[i])
-                    .MultNormalize(globalPosition);
-
-            Vec3f& mins = rawSurface.jointGeometryMins[jointIndices[i]];
-            mins[0] = std::min(mins[0], (float)localPosition[0]);
-            mins[1] = std::min(mins[1], (float)localPosition[1]);
-            mins[2] = std::min(mins[2], (float)localPosition[2]);
-
-            Vec3f& maxs = rawSurface.jointGeometryMaxs[jointIndices[i]];
-            maxs[0] = std::max(maxs[0], (float)localPosition[0]);
-            maxs[1] = std::max(maxs[1], (float)localPosition[1]);
-            maxs[2] = std::max(maxs[2], (float)localPosition[2]);
-          }
-        }
-      }
-    }
-
-    if (textures[RAW_TEXTURE_USAGE_NORMAL] != -1) {
-      // Distinguish vertices that are used by triangles with a different texture polarity to
-      // avoid degenerate tangent space smoothing.
-      const bool polarity =
-          TriangleTexturePolarity(rawVertices[0].uv0, rawVertices[1].uv0, rawVertices[2].uv0);
-      rawVertices[0].polarityUv0 = polarity;
-      rawVertices[1].polarityUv0 = polarity;
-      rawVertices[2].polarityUv0 = polarity;
-    }
-
-    int rawVertexIndices[3];
-    for (int vertexIndex = 0; vertexIndex < 3; vertexIndex++) {
-      rawVertexIndices[vertexIndex] = raw.AddVertex(rawVertices[vertexIndex]);
-    }
-
-    const RawMaterialType materialType =
-        GetMaterialType(raw, textures, vertexTransparency, skinning.IsSkinned());
-    const int rawMaterialIndex = raw.AddMaterial(
-        materialId, materialName, materialType, textures, rawMatProps, userProperties);
-
-    raw.AddTriangle(
-        rawVertexIndices[0],
-        rawVertexIndices[1],
-        rawVertexIndices[2],
-        rawMaterialIndex,
-        rawSurfaceIndex);
-  }
+  FbxMesh2Raw(raw, pScene, pNode, FB_NGON_ENCODING, textureLocations).Process();
 }
 
 // ar : aspectY / aspectX
@@ -709,11 +234,11 @@ static FbxVector4 computeLocalScale(FbxNode* pNode, FbxTime pTime = FBXSDK_TIME_
       pNode->GetTransform().GetInheritType() != FbxTransform::eInheritRrs) {
     return lScale;
   }
-  // This is a very partial fix that is only correct for models that use identity scale in their
-  // rig's joints. We could write better support that compares local scale to parent's global
-  // scale and apply the ratio to our local translation. We'll always want to return scale 1,
-  // though -- that's the only way to encode the missing 'S' (parent scale) in the transform
-  // chain.
+  // This is a very partial fix that is only correct for models that use identity scale in
+  // their rig's joints. We could write better support that compares local scale to parent's
+  // global scale and apply the ratio to our local translation. We'll always want to return
+  // scale 1, though -- that's the only way to encode the missing 'S' (parent scale) in the
+  // transform chain.
   return FbxVector4(1, 1, 1, 1);
 }
 
@@ -913,8 +438,8 @@ static void ReadAnimations(RawModel& raw, FbxScene* pScene, const GltfOptions& o
       std::vector<FbxAnimCurve*> shapeAnimCurves;
       FbxNodeAttribute* nodeAttr = pNode->GetNodeAttribute();
       if (nodeAttr != nullptr && nodeAttr->GetAttributeType() == FbxNodeAttribute::EType::eMesh) {
-        // it's inelegant to recreate this same access class multiple times, but it's also dirt
-        // cheap...
+        // it's inelegant to recreate this same access class multiple times, but it's also
+        // dirt cheap...
         FbxBlendShapesAccess blendShapes(static_cast<FbxMesh*>(nodeAttr));
 
         for (FbxLongLong frameIndex = firstFrameIndex; frameIndex <= lastFrameIndex; frameIndex++) {
@@ -928,9 +453,9 @@ static void ReadAnimations(RawModel& raw, FbxScene* pScene, const GltfOptions& o
             int targetCount = static_cast<int>(blendShapes.GetTargetShapeCount(channelIx));
 
             // the target shape 'fullWeight' values are a strictly ascending list of floats
-            // (between 0 and 100), forming a sequence of intervals -- this convenience function
-            // figures out if 'p' lays between some certain target fullWeights, and if so where
-            // (from 0 to 1).
+            // (between 0 and 100), forming a sequence of intervals -- this convenience
+            // function figures out if 'p' lays between some certain target fullWeights, and
+            // if so where (from 0 to 1).
             auto findInInterval = [&](const double p, const int n) {
               if (n >= targetCount) {
                 // p is certainly completely left of this interval
@@ -1170,10 +695,11 @@ bool LoadFBXFile(
   FbxAxisSystem::MayaYUp.ConvertScene(pScene);
 
   // FBX's internal unscaled unit is centimetres, and if you choose not to work in that unit,
-  // you will find scaling transforms on all the children of the root node. Those transforms are
-  // superfluous and cause a lot of people a lot of trouble. Luckily we can get rid of them by
-  // converting to CM here (which just gets rid of the scaling), and then we pre-multiply the
-  // scale factor into every vertex position (and related attributes) instead.
+  // you will find scaling transforms on all the children of the root node. Those transforms
+  // are superfluous and cause a lot of people a lot of trouble. Luckily we can get rid of
+  // them by converting to CM here (which just gets rid of the scaling), and then we
+  // pre-multiply the scale factor into every vertex position (and related attributes)
+  // instead.
   FbxSystemUnit sceneSystemUnit = pScene->GetGlobalSettings().GetSystemUnit();
   if (sceneSystemUnit != FbxSystemUnit::cm) {
     FbxSystemUnit::cm.ConvertScene(pScene);

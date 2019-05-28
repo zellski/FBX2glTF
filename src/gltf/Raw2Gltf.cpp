@@ -415,7 +415,7 @@ ModelData* Raw2Gltf(
       const long surfaceId = rawSurface.id;
 
       const RawMaterial& rawMaterial =
-          surfaceModel.GetMaterial(surfaceModel.GetTriangle(0).materialIndex);
+          surfaceModel.GetMaterial(surfaceModel.GetMaterialIndex(surfaceModel.GetTriangle(0)));
       const MaterialData& mData = require(materialsById, rawMaterial.id);
 
       MeshData* mesh = nullptr;

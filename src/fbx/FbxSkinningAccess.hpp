@@ -22,7 +22,7 @@ class FbxSkinningAccess {
  public:
   static const int MAX_WEIGHTS = 4;
 
-  FbxSkinningAccess(const FbxMesh* pMesh, FbxScene* pScene, FbxNode* pNode);
+  FbxSkinningAccess(const FbxMesh* pMesh, FbxScene* pScene);
 
   bool IsSkinned() const {
     return (vertexJointWeights.size() > 0);

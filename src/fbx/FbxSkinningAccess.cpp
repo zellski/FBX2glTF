@@ -8,8 +8,7 @@
 
 #include "FbxSkinningAccess.hpp"
 
-FbxSkinningAccess::FbxSkinningAccess(const FbxMesh* pMesh, FbxScene* pScene, FbxNode* pNode)
-    : rootIndex(-1) {
+FbxSkinningAccess::FbxSkinningAccess(const FbxMesh* pMesh, FbxScene* pScene) : rootIndex(-1) {
   for (int deformerIndex = 0; deformerIndex < pMesh->GetDeformerCount(); deformerIndex++) {
     FbxSkin* skin =
         reinterpret_cast<FbxSkin*>(pMesh->GetDeformer(deformerIndex, FbxDeformer::eSkin));

@@ -12,7 +12,7 @@ if ("${CMAKE_CURRENT_SOURCE_DIR}" STREQUAL "${CMAKE_BINARY_DIR}")
     "Building from within the source tree is not supported! ${typical_usage_str}")
 endif ()
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 14)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}")
 include(ExternalProject)
@@ -141,6 +141,8 @@ set(LIB_SOURCE_FILES
         src/fbx/materials/TraditionalMaterials.hpp
         src/fbx/Fbx2Raw.cpp
         src/fbx/Fbx2Raw.hpp
+        src/fbx/FbxMesh2Raw.cpp
+        src/fbx/FbxMesh2Raw.hpp
         src/fbx/FbxBlendShapesAccess.cpp
         src/fbx/FbxBlendShapesAccess.hpp
         src/fbx/FbxLayerElementAccess.hpp
