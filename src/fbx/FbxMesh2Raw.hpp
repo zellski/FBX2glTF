@@ -16,6 +16,8 @@
 #include "materials/RoughnessMetallicMaterials.hpp"
 #include "materials/TraditionalMaterials.hpp"
 
+namespace FBX2glTF {
+
 struct Polygon {
   Polygon(int fbxPolyIndex)
       : fbxPolyIndex(fbxPolyIndex), hasTranslucentVertices(false), rawPolyIndex(-1) {}
@@ -25,9 +27,9 @@ struct Polygon {
 };
 
 struct Triangle {
-  Triangle(Polygon& polygon, int v1, int v2, int v3)
+  Triangle(std::shared_ptr<Polygon> polygon, int v1, int v2, int v3)
       : polygon(polygon), vertexIndices{v1, v2, v3}, rawVertexIndices{-1, -1, -1} {}
-  Polygon& polygon;
+  std::shared_ptr<Polygon> polygon;
   const int vertexIndices[3];
   int rawVertexIndices[3];
 };
@@ -35,8 +37,9 @@ struct Triangle {
 struct Triangulation {
   Triangulation(FbxMesh* mesh) : mesh(mesh) {}
   FbxMesh* const mesh;
-  std::vector<Polygon> polygons;
-  std::vector<Triangle> triangles;
+  std::vector<const FbxBlendShapesAccess::TargetShape*> targetShapes;
+  std::vector<std::shared_ptr<Polygon>> polygons;
+  std::vector<std::shared_ptr<Triangle>> triangles;
 };
 
 struct FbxMeshAccess {
@@ -74,14 +77,23 @@ class FbxMesh2Raw {
   void Process();
 
  private:
-  RawSurface& ProcessSurface(Triangulation& triangulation, const FbxMeshAccess& meshAccess);
+  int ProcessSurface(Triangulation& triangulation, const FbxMeshAccess& meshAccess);
   void ProcessTriangles(
       Triangulation& triangulation,
-      RawSurface& surface,
+      int rawSurfaceIndex,
       const FbxMeshAccess& meshAccess);
+  RawMaterialType GetMaterialType(
+      const int textures[RAW_TEXTURE_USAGE_MAX],
+      const bool vertexTransparency,
+      const bool isSkinned);
+  int GetMaterial(
+      const std::shared_ptr<FbxMaterialInfo> fbxMaterial,
+	  const std::vector<std::string> userProperties,
+      const bool hasTranslucentVertices,
+      const bool isSkinned);
   void ProcessPolygons(
       Triangulation& triangulation,
-      RawSurface& surface,
+      int rawSurfaceIndex,
       const FbxMeshAccess& meshAccess);
   std::unique_ptr<Triangulation> TriangulateUsingSDK();
   std::unique_ptr<Triangulation> TriangulateForNgonEncoding();
@@ -92,3 +104,4 @@ class FbxMesh2Raw {
   const FbxMeshTriangulationMethod triangulationMethod;
   const std::map<const FbxTexture*, FbxString>& textureLocations;
 };
+} // namespace Fbx2Gltf

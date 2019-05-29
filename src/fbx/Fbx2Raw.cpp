@@ -27,6 +27,9 @@
 #include "utils/File_Utils.hpp"
 #include "utils/String_Utils.hpp"
 
+// TODO: wrap everything in namespaces
+using namespace FBX2glTF;
+
 float scaleFactor;
 
 static void ReadMesh(
@@ -34,7 +37,7 @@ static void ReadMesh(
     FbxScene* pScene,
     FbxNode* pNode,
     const std::map<const FbxTexture*, FbxString>& textureLocations) {
-  FbxMesh2Raw(raw, pScene, pNode, FB_NGON_ENCODING, textureLocations).Process();
+  FbxMesh2Raw(raw, pScene, pNode, FbxMeshTriangulationMethod::FBX_SDK, textureLocations).Process();
 }
 
 // ar : aspectY / aspectX

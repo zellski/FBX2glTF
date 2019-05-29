@@ -26,6 +26,8 @@
 
 extern float scaleFactor;
 
+using namespace FBX2glTF;
+
 FbxMeshAccess::FbxMeshAccess(
     FbxScene* scene,
     FbxNode* node,
@@ -58,37 +60,40 @@ void FbxMesh2Raw::Process() {
   switch (triangulationMethod) {
     case FBX_SDK:
       triangulation = TriangulateUsingSDK();
+      break;
     case FB_NGON_ENCODING:
-      triangulation = TriangulateForNgonEncoding();
+//      triangulation = TriangulateForNgonEncoding();
+      break;
   }
-
+  
   const auto meshAccess = std::make_unique<FbxMeshAccess>(scene, node, textureLocations);
-  RawSurface& surface = ProcessSurface(*triangulation, *meshAccess);
-  ProcessTriangles(*triangulation, surface, *meshAccess);
-  ProcessPolygons(*triangulation, surface, *meshAccess);
+  int rawSurfaceIndex = ProcessSurface(*triangulation, *meshAccess);
+  fmt::printf("After ProcessSurface(), rawSurfaceIndex = %d\n", rawSurfaceIndex);
+  ProcessTriangles(*triangulation, rawSurfaceIndex, *meshAccess);
+  ProcessPolygons(*triangulation, rawSurfaceIndex, *meshAccess);
 }
 
-RawSurface& FbxMesh2Raw::ProcessSurface(
+int FbxMesh2Raw::ProcessSurface(
     Triangulation& triangulation,
     const FbxMeshAccess& meshAccess) {
-  const long surfaceId = triangulation.mesh->GetUniqueID();
+  const long fbxSurfaceId = triangulation.mesh->GetUniqueID();
 
   // Associate the node to this surface
   int nodeId = raw.GetNodeById(node->GetUniqueID());
   if (nodeId >= 0) {
     RawNode& node = raw.GetNode(nodeId);
-    node.surfaceId = surfaceId;
+    node.surfaceId = fbxSurfaceId;
   }
 
-  int rawSurfaceIndex = raw.GetSurfaceById(surfaceId);
+  int rawSurfaceIndex = raw.GetSurfaceById(fbxSurfaceId);
   if (rawSurfaceIndex >= 0) {
     // This surface is already loaded
-    return raw.GetSurface(surfaceId);
+    return rawSurfaceIndex;
   }
 
   const char* meshName =
       (node->GetName()[0] != '\0') ? node->GetName() : triangulation.mesh->GetName();
-  rawSurfaceIndex = raw.AddSurface(meshName, surfaceId);
+  rawSurfaceIndex = raw.AddSurface(meshName, fbxSurfaceId);
   RawSurface& rawSurface = raw.GetSurface(rawSurfaceIndex);
 
   if (verboseOutput) {
@@ -143,13 +148,12 @@ RawSurface& FbxMesh2Raw::ProcessSurface(
   }
 
   rawSurface.blendChannels.clear();
-  std::vector<const FbxBlendShapesAccess::TargetShape*> targetShapes;
   for (size_t channelIx = 0; channelIx < meshAccess.blendShapes.GetChannelCount(); channelIx++) {
     for (size_t targetIx = 0; targetIx < meshAccess.blendShapes.GetTargetShapeCount(channelIx);
          targetIx++) {
       const FbxBlendShapesAccess::TargetShape& shape =
           meshAccess.blendShapes.GetTargetShape(channelIx, targetIx);
-      targetShapes.push_back(&shape);
+      triangulation.targetShapes.push_back(&shape);
       auto& blendChannel = meshAccess.blendShapes.GetBlendChannel(channelIx);
 
       rawSurface.blendChannels.push_back(
@@ -159,12 +163,12 @@ RawSurface& FbxMesh2Raw::ProcessSurface(
                           blendChannel.name});
     }
   }
-  return rawSurface;
+  return rawSurfaceIndex;
 }
 
 void FbxMesh2Raw::ProcessTriangles(
     Triangulation& triangulation,
-    RawSurface& rawSurface,
+    const int rawSurfaceIndex,
     const FbxMeshAccess& meshAccess) {
   // The FbxNode geometric transformation describes how a FbxNodeAttribute is offset from
   // the FbxNode's local frame of reference. These geometric transforms are applied to the
@@ -178,7 +182,7 @@ void FbxMesh2Raw::ProcessTriangles(
   const FbxAMatrix meshTransform(meshTranslation, meshRotation, meshScaling);
   const FbxMatrix transform = meshTransform;
 
-  // Remove translation & scaling from transforms that will bi applied to normals, tangents &
+  // Remove translation & scaling from transforms that will be applied to normals, tangents &
   // binormals
   const FbxMatrix normalTransform(FbxVector4(), meshRotation, meshScaling);
   const FbxMatrix inverseTransposeTransform = normalTransform.Inverse().Transpose();
@@ -186,12 +190,14 @@ void FbxMesh2Raw::ProcessTriangles(
   const FbxVector4* controlPoints = meshAccess.mesh->GetControlPoints();
   int* allPolygonVertices = meshAccess.mesh->GetPolygonVertices();
 
-  for (int triIx = 0; triIx < triangulation.triangles.size(); triIx++) {
-    int originalPolyIx = triangulation.triangles[triIx].polygon.fbxPolyIndex;
+  fmt::printf(
+      "Looping over %d triangles in ProcessTriangles()...\n", triangulation.triangles.size());
+  for (const auto& tri : triangulation.triangles) {
+    int originalPolyIx = tri->polygon->fbxPolyIndex;
 
     RawVertex rawVertices[3];
     for (int vertexIndex = 0; vertexIndex < 3; vertexIndex++) {
-      const int polygonVertexIndex = triangulation.triangles[triIx].vertexIndices[vertexIndex];
+      const int polygonVertexIndex = tri->vertexIndices[vertexIndex];
       const int controlPointIndex = allPolygonVertices[polygonVertexIndex];
 
       // Note that the default values here must be the same as the RawVertex default values!
@@ -251,14 +257,15 @@ void FbxMesh2Raw::ProcessTriangles(
 
       // flag this triangle as transparent if any of its corner vertices substantially deviates
       // from fully opaque
-      triangulation.triangles[triIx].polygon.hasTranslucentVertices |=
+      tri->polygon->hasTranslucentVertices |=
           meshAccess.colorLayer.LayerPresent() && (fabs(fbxColor.mAlpha - 1.0) > 1e-3);
 
-      rawSurface.bounds.AddPoint(vertex.position);
+	  RawSurface& surface = raw.GetSurface(rawSurfaceIndex);
+      surface.bounds.AddPoint(vertex.position);
 
-      if (!targetShapes.empty()) {
+      if (!triangulation.targetShapes.empty()) {
         vertex.blendSurfaceIx = rawSurfaceIndex;
-        for (const auto* targetShape : targetShapes) {
+        for (const auto* targetShape : triangulation.targetShapes) {
           RawBlendVertex blendVertex;
           // the morph target data must be transformed just as with the vertex positions above
           const FbxVector4& shapePosition =
@@ -312,29 +319,28 @@ void FbxMesh2Raw::ProcessTriangles(
                 meshAccess.skinning.GetJointInverseGlobalTransforms(jointIndices[i])
                     .MultNormalize(globalPosition);
 
-            Vec3f& mins = rawSurface.jointGeometryMins[jointIndices[i]];
+            Vec3f& mins = surface.jointGeometryMins[jointIndices[i]];
             mins[0] = std::min(mins[0], (float)localPosition[0]);
             mins[1] = std::min(mins[1], (float)localPosition[1]);
             mins[2] = std::min(mins[2], (float)localPosition[2]);
 
-            Vec3f& maxs = rawSurface.jointGeometryMaxs[jointIndices[i]];
+            Vec3f& maxs = surface.jointGeometryMaxs[jointIndices[i]];
             maxs[0] = std::max(maxs[0], (float)localPosition[0]);
             maxs[1] = std::max(maxs[1], (float)localPosition[1]);
             maxs[2] = std::max(maxs[2], (float)localPosition[2]);
           }
         }
       }
-      triangulation.triangles[triIx].rawVertexIndices[vertexIndex] =
-          raw.AddVertex(rawVertices[vertexIndex]);
+      int rawVertexIx = raw.AddVertex(rawVertices[vertexIndex]);
+      tri->rawVertexIndices[vertexIndex] = rawVertexIx;
     }
   }
 }
 
-static RawMaterialType GetMaterialType(
-    const RawModel& raw,
+RawMaterialType FbxMesh2Raw::GetMaterialType(
     const int textures[RAW_TEXTURE_USAGE_MAX],
     const bool vertexTransparency,
-    const bool skinned) {
+    const bool isSkinned) {
   // DIFFUSE and ALBEDO are different enough to represent distinctly, but they both help determine
   // transparency.
   int diffuseTexture = textures[RAW_TEXTURE_USAGE_DIFFUSE];
@@ -344,128 +350,136 @@ static RawMaterialType GetMaterialType(
   // determine material type based on texture occlusion.
   if (diffuseTexture >= 0) {
     return (raw.GetTexture(diffuseTexture).occlusion == RAW_TEXTURE_OCCLUSION_OPAQUE)
-        ? (skinned ? RAW_MATERIAL_TYPE_SKINNED_OPAQUE : RAW_MATERIAL_TYPE_OPAQUE)
-        : (skinned ? RAW_MATERIAL_TYPE_SKINNED_TRANSPARENT : RAW_MATERIAL_TYPE_TRANSPARENT);
+        ? (isSkinned ? RAW_MATERIAL_TYPE_SKINNED_OPAQUE : RAW_MATERIAL_TYPE_OPAQUE)
+        : (isSkinned ? RAW_MATERIAL_TYPE_SKINNED_TRANSPARENT : RAW_MATERIAL_TYPE_TRANSPARENT);
   }
 
   // else if there is any vertex transparency, treat whole mesh as transparent
   if (vertexTransparency) {
-    return skinned ? RAW_MATERIAL_TYPE_SKINNED_TRANSPARENT : RAW_MATERIAL_TYPE_TRANSPARENT;
+    return isSkinned ? RAW_MATERIAL_TYPE_SKINNED_TRANSPARENT : RAW_MATERIAL_TYPE_TRANSPARENT;
   }
 
   // Default to simply opaque.
-  return skinned ? RAW_MATERIAL_TYPE_SKINNED_OPAQUE : RAW_MATERIAL_TYPE_OPAQUE;
+  return isSkinned ? RAW_MATERIAL_TYPE_SKINNED_OPAQUE : RAW_MATERIAL_TYPE_OPAQUE;
+}
+
+int FbxMesh2Raw::GetMaterial(
+    const std::shared_ptr<FbxMaterialInfo> fbxMaterial,
+    const std::vector<std::string> userProperties,
+	const bool hasTranslucentVertices,
+    const bool isSkinned) {
+  int textures[RAW_TEXTURE_USAGE_MAX];
+  std::fill_n(textures, (int)RAW_TEXTURE_USAGE_MAX, -1);
+
+  std::shared_ptr<RawMatProps> rawMatProps;
+  FbxString materialName;
+  long materialId;
+
+  if (fbxMaterial == nullptr) {
+    materialName = "DefaultMaterial";
+    materialId = -1;
+    rawMatProps.reset(new RawTraditionalMatProps(
+        RAW_SHADING_MODEL_LAMBERT,
+        Vec3f(0, 0, 0),
+        Vec4f(.5, .5, .5, 1),
+        Vec3f(0, 0, 0),
+        Vec3f(0, 0, 0),
+        0.5));
+
+  } else {
+    materialName = fbxMaterial->name;
+    materialId = fbxMaterial->id;
+
+    const auto maybeAddTexture = [&](const FbxFileTexture* tex, RawTextureUsage usage) {
+      if (tex != nullptr) {
+        // dig out the inferred filename from the textureLocations map
+        FbxString inferredPath = textureLocations.find(tex)->second;
+        textures[usage] =
+            raw.AddTexture(tex->GetName(), tex->GetFileName(), inferredPath.Buffer(), usage);
+      }
+    };
+
+    std::shared_ptr<RawMatProps> matInfo;
+    if (fbxMaterial->shadingModel == FbxRoughMetMaterialInfo::FBX_SHADER_METROUGH) {
+      FbxRoughMetMaterialInfo* fbxMatInfo =
+          static_cast<FbxRoughMetMaterialInfo*>(fbxMaterial.get());
+
+      maybeAddTexture(fbxMatInfo->texBaseColor, RAW_TEXTURE_USAGE_ALBEDO);
+      maybeAddTexture(fbxMatInfo->texNormal, RAW_TEXTURE_USAGE_NORMAL);
+      maybeAddTexture(fbxMatInfo->texEmissive, RAW_TEXTURE_USAGE_EMISSIVE);
+      maybeAddTexture(fbxMatInfo->texRoughness, RAW_TEXTURE_USAGE_ROUGHNESS);
+      maybeAddTexture(fbxMatInfo->texMetallic, RAW_TEXTURE_USAGE_METALLIC);
+      maybeAddTexture(fbxMatInfo->texAmbientOcclusion, RAW_TEXTURE_USAGE_OCCLUSION);
+      rawMatProps.reset(new RawMetRoughMatProps(
+          RAW_SHADING_MODEL_PBR_MET_ROUGH,
+          toVec4f(fbxMatInfo->baseColor),
+          toVec3f(fbxMatInfo->emissive),
+          fbxMatInfo->emissiveIntensity,
+          fbxMatInfo->metallic,
+          fbxMatInfo->roughness,
+          fbxMatInfo->invertRoughnessMap));
+    } else {
+      FbxTraditionalMaterialInfo* fbxMatInfo =
+          static_cast<FbxTraditionalMaterialInfo*>(fbxMaterial.get());
+      RawShadingModel shadingModel;
+      if (fbxMaterial->shadingModel == "Lambert") {
+        shadingModel = RAW_SHADING_MODEL_LAMBERT;
+      } else if (0 == fbxMaterial->shadingModel.CompareNoCase("Blinn")) {
+        shadingModel = RAW_SHADING_MODEL_BLINN;
+      } else if (0 == fbxMaterial->shadingModel.CompareNoCase("Phong")) {
+        shadingModel = RAW_SHADING_MODEL_PHONG;
+      } else if (0 == fbxMaterial->shadingModel.CompareNoCase("Constant")) {
+        shadingModel = RAW_SHADING_MODEL_PHONG;
+      } else {
+        shadingModel = RAW_SHADING_MODEL_UNKNOWN;
+      }
+      maybeAddTexture(fbxMatInfo->texDiffuse, RAW_TEXTURE_USAGE_DIFFUSE);
+      maybeAddTexture(fbxMatInfo->texNormal, RAW_TEXTURE_USAGE_NORMAL);
+      maybeAddTexture(fbxMatInfo->texEmissive, RAW_TEXTURE_USAGE_EMISSIVE);
+      maybeAddTexture(fbxMatInfo->texShininess, RAW_TEXTURE_USAGE_SHININESS);
+      maybeAddTexture(fbxMatInfo->texAmbient, RAW_TEXTURE_USAGE_AMBIENT);
+      maybeAddTexture(fbxMatInfo->texSpecular, RAW_TEXTURE_USAGE_SPECULAR);
+      rawMatProps.reset(new RawTraditionalMatProps(
+          shadingModel,
+          toVec3f(fbxMatInfo->colAmbient),
+          toVec4f(fbxMatInfo->colDiffuse),
+          toVec3f(fbxMatInfo->colEmissive),
+          toVec3f(fbxMatInfo->colSpecular),
+          fbxMatInfo->shininess));
+    }
+  }
+
+    return raw.AddMaterial(
+      materialId,
+      materialName,
+      GetMaterialType(textures, hasTranslucentVertices, isSkinned),
+      textures,
+      rawMatProps,
+      userProperties);
 }
 
 void FbxMesh2Raw::ProcessPolygons(
     Triangulation& triangulation,
-    RawSurface& surface,
+    int rawSurfaceIndex,
     const FbxMeshAccess& meshAccess) {
-  for (auto poly : triangulation.polygons) {
-    const std::shared_ptr<FbxMaterialInfo> fbxMaterial =
-        meshAccess.materials.GetMaterial(poly.fbxPolyIndex);
-    const std::vector<std::string> userProperties =
-        meshAccess.materials.GetUserProperties(poly.fbxPolyIndex);
-
-    int textures[RAW_TEXTURE_USAGE_MAX];
-    std::fill_n(textures, (int)RAW_TEXTURE_USAGE_MAX, -1);
-
-    std::shared_ptr<RawMatProps> rawMatProps;
-    FbxString materialName;
-    long materialId;
-
-    if (fbxMaterial == nullptr) {
-      materialName = "DefaultMaterial";
-      materialId = -1;
-      rawMatProps.reset(new RawTraditionalMatProps(
-          RAW_SHADING_MODEL_LAMBERT,
-          Vec3f(0, 0, 0),
-          Vec4f(.5, .5, .5, 1),
-          Vec3f(0, 0, 0),
-          Vec3f(0, 0, 0),
-          0.5));
-
-    } else {
-      materialName = fbxMaterial->name;
-      materialId = fbxMaterial->id;
-
-      const auto maybeAddTexture = [&](const FbxFileTexture* tex, RawTextureUsage usage) {
-        if (tex != nullptr) {
-          // dig out the inferred filename from the textureLocations map
-          FbxString inferredPath = textureLocations.find(tex)->second;
-          textures[usage] =
-              raw.AddTexture(tex->GetName(), tex->GetFileName(), inferredPath.Buffer(), usage);
-        }
-      };
-
-      std::shared_ptr<RawMatProps> matInfo;
-      if (fbxMaterial->shadingModel == FbxRoughMetMaterialInfo::FBX_SHADER_METROUGH) {
-        FbxRoughMetMaterialInfo* fbxMatInfo =
-            static_cast<FbxRoughMetMaterialInfo*>(fbxMaterial.get());
-
-        maybeAddTexture(fbxMatInfo->texBaseColor, RAW_TEXTURE_USAGE_ALBEDO);
-        maybeAddTexture(fbxMatInfo->texNormal, RAW_TEXTURE_USAGE_NORMAL);
-        maybeAddTexture(fbxMatInfo->texEmissive, RAW_TEXTURE_USAGE_EMISSIVE);
-        maybeAddTexture(fbxMatInfo->texRoughness, RAW_TEXTURE_USAGE_ROUGHNESS);
-        maybeAddTexture(fbxMatInfo->texMetallic, RAW_TEXTURE_USAGE_METALLIC);
-        maybeAddTexture(fbxMatInfo->texAmbientOcclusion, RAW_TEXTURE_USAGE_OCCLUSION);
-        rawMatProps.reset(new RawMetRoughMatProps(
-            RAW_SHADING_MODEL_PBR_MET_ROUGH,
-            toVec4f(fbxMatInfo->baseColor),
-            toVec3f(fbxMatInfo->emissive),
-            fbxMatInfo->emissiveIntensity,
-            fbxMatInfo->metallic,
-            fbxMatInfo->roughness,
-            fbxMatInfo->invertRoughnessMap));
-      } else {
-        FbxTraditionalMaterialInfo* fbxMatInfo =
-            static_cast<FbxTraditionalMaterialInfo*>(fbxMaterial.get());
-        RawShadingModel shadingModel;
-        if (fbxMaterial->shadingModel == "Lambert") {
-          shadingModel = RAW_SHADING_MODEL_LAMBERT;
-        } else if (0 == fbxMaterial->shadingModel.CompareNoCase("Blinn")) {
-          shadingModel = RAW_SHADING_MODEL_BLINN;
-        } else if (0 == fbxMaterial->shadingModel.CompareNoCase("Phong")) {
-          shadingModel = RAW_SHADING_MODEL_PHONG;
-        } else if (0 == fbxMaterial->shadingModel.CompareNoCase("Constant")) {
-          shadingModel = RAW_SHADING_MODEL_PHONG;
-        } else {
-          shadingModel = RAW_SHADING_MODEL_UNKNOWN;
-        }
-        maybeAddTexture(fbxMatInfo->texDiffuse, RAW_TEXTURE_USAGE_DIFFUSE);
-        maybeAddTexture(fbxMatInfo->texNormal, RAW_TEXTURE_USAGE_NORMAL);
-        maybeAddTexture(fbxMatInfo->texEmissive, RAW_TEXTURE_USAGE_EMISSIVE);
-        maybeAddTexture(fbxMatInfo->texShininess, RAW_TEXTURE_USAGE_SHININESS);
-        maybeAddTexture(fbxMatInfo->texAmbient, RAW_TEXTURE_USAGE_AMBIENT);
-        maybeAddTexture(fbxMatInfo->texSpecular, RAW_TEXTURE_USAGE_SPECULAR);
-        rawMatProps.reset(new RawTraditionalMatProps(
-            shadingModel,
-            toVec3f(fbxMatInfo->colAmbient),
-            toVec4f(fbxMatInfo->colDiffuse),
-            toVec3f(fbxMatInfo->colEmissive),
-            toVec3f(fbxMatInfo->colSpecular),
-            fbxMatInfo->shininess));
-      }
-    }
-
-    if (poly.rawPolyIndex < 0) {
-      poly.rawPolyIndex = raw.AddMaterial(
-          materialId,
-          materialName,
-          GetMaterialType(
-              raw, textures, poly.hasTranslucentVertices, meshAccess.skinning.IsSkinned()),
-          textures,
-          rawMatProps,
-          userProperties);
-    }
+  for (auto& poly : triangulation.polygons) {
+    assert(poly->rawPolyIndex == -1);
+    int rawMaterialIx = GetMaterial(
+        meshAccess.materials.GetMaterial(poly->fbxPolyIndex),
+        meshAccess.materials.GetUserProperties(poly->fbxPolyIndex),
+        poly->hasTranslucentVertices,
+        meshAccess.skinning.IsSkinned());
+    int rawPolyIx = raw.AddPolygon(rawSurfaceIndex, rawMaterialIx);
+    poly->rawPolyIndex = rawPolyIx;
   }
   // now we have everything we need to actually create the triangles
-  for (const Triangle& tri : triangulation.triangles) {
+  for (const auto& tri : triangulation.triangles) {
+    assert(tri->polygon->rawPolyIndex >= 0);
     raw.AddTriangle(
-        tri.rawVertexIndices[0],
-        tri.rawVertexIndices[1],
-        tri.rawVertexIndices[2],
-        tri.polygon.rawPolyIndex);
+        tri->rawVertexIndices[0],
+        tri->rawVertexIndices[1],
+        tri->rawVertexIndices[2],
+        tri->polygon->rawPolyIndex);
   }
 }
 
@@ -476,62 +490,56 @@ std::unique_ptr<Triangulation> FbxMesh2Raw::TriangulateUsingSDK() {
   auto result = std::make_unique<Triangulation>(mesh);
 
   int polygonVertexIndex = 0;
-  for (int polygonIndex = 0; polygonIndex < mesh->GetPolygonCount(); polygonIndex++) {
-    FBX_ASSERT(mesh->GetPolygonSize(polygonIndex) == 3);
-    result->polygons.emplace_back(polygonIndex);
-    result->triangles.emplace_back(
-        result->polygons.back(),
-        polygonVertexIndex + 0,
-        polygonVertexIndex + 1,
-        polygonVertexIndex + 2);
+  for (int fbxPolyIx = 0; fbxPolyIx < mesh->GetPolygonCount(); fbxPolyIx++) {
+    FBX_ASSERT(mesh->GetPolygonSize(fbxPolyIx) == 3);
+
+	auto polygon = std::make_shared<Polygon>(fbxPolyIx);
+    auto triangle = std::make_shared<Triangle>(
+        polygon, polygonVertexIndex + 0, polygonVertexIndex + 1, polygonVertexIndex + 2);
+    result->polygons.push_back(polygon);
+    result->triangles.push_back(triangle);
     polygonVertexIndex += 3;
   }
-}
-
-std::unique_ptr<Triangulation> FbxMesh2Raw::TriangulateForNgonEncoding() {
-  assert(node->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::eMesh);
-  FbxMesh* mesh = node->GetMesh();
-  auto result = std::make_unique<Triangulation>(mesh);
-
-  int polyCount[20] = {0};
-  for (int polygonIndex = 0; polygonIndex < mesh->GetPolygonCount(); polygonIndex++) {
-    polyCount[std::min(mesh->GetPolygonSize(polygonIndex), 20)]++;
-  }
-  fmt::printf(
-      "Before triangulation:\nThere are %d polys and %d control points.\n",
-      mesh->GetPolygonCount(),
-      mesh->GetControlPointsCount());
-  for (int i = 0; i < 20; i++) {
-    if (polyCount[i] > 0) {
-      fmt::printf("Polygon<%d> count: %d\n", i, polyCount[i]);
-    }
-  }
-
-  // FbxGeometryConverter meshConverter(pScene->GetFbxManager());
-  // meshConverter.Triangulate(node->GetNodeAttribute(), true);
-  // mesh = node->GetMesh();
-  // fmt::printf(
-  //     "After triangulation, there are %d tris and %d control points.\n",
-  //     mesh->GetPolygonCount(),
-  //     mesh->GetControlPointsCount());
-  int* allPolygonVertices = mesh->GetPolygonVertices();
-  int anchorIndex = -1;
-  for (int polygonIndex = 0; polygonIndex < mesh->GetPolygonCount(); polygonIndex++) {
-    int polyVertexCount = mesh->GetPolygonSize(polygonIndex);
-    int polyVertexStart = mesh->GetPolygonVertexIndex(polygonIndex);
-    int offset = (anchorIndex == allPolygonVertices[polyVertexCount]) ? 1 : 0;
-    anchorIndex = allPolygonVertices[polyVertexStart + offset];
-    result->polygons.emplace_back(polygonIndex);
-    for (int vertexIndex = offset + 2; vertexIndex < offset + polyVertexCount; vertexIndex++) {
-      int firstTriIndex = vertexIndex - 1;
-      int otherTriIndex = vertexIndex % polyVertexCount;
-      result->triangles.emplace_back(
-          result->polygons.back(),
-          polyVertexStart + offset,
-          polyVertexStart + firstTriIndex,
-          polyVertexStart + otherTriIndex);
-    }
-  }
-  fmt::printf("After triangulation, there are %d tris.\n", result->triangles.size());
   return result;
 }
+
+//std::unique_ptr<Triangulation> FbxMesh2Raw::TriangulateForNgonEncoding() {
+//  assert(node->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::eMesh);
+//  FbxMesh* mesh = node->GetMesh();
+//  auto result = std::make_unique<Triangulation>(mesh);
+//
+//  int polyCount[20] = {0};
+//  for (int polygonIndex = 0; polygonIndex < mesh->GetPolygonCount(); polygonIndex++) {
+//    polyCount[std::min(mesh->GetPolygonSize(polygonIndex), 20)]++;
+//  }
+//  fmt::printf(
+//      "Before triangulation:\nThere are %d polys and %d control points.\n",
+//      mesh->GetPolygonCount(),
+//      mesh->GetControlPointsCount());
+//  for (int i = 0; i < 20; i++) {
+//    if (polyCount[i] > 0) {
+//      fmt::printf("Polygon<%d> count: %d\n", i, polyCount[i]);
+//    }
+//  }
+//
+//  int* allPolygonVertices = mesh->GetPolygonVertices();
+//  int anchorIndex = -1;
+//  for (int polygonIndex = 0; polygonIndex < mesh->GetPolygonCount(); polygonIndex++) {
+//    int polyVertexCount = mesh->GetPolygonSize(polygonIndex);
+//    int polyVertexStart = mesh->GetPolygonVertexIndex(polygonIndex);
+//    int offset = (anchorIndex == allPolygonVertices[polyVertexCount]) ? 1 : 0;
+//    anchorIndex = allPolygonVertices[polyVertexStart + offset];
+//    result->polygons.emplace_back(polygonIndex);
+//    for (int vertexIndex = offset + 2; vertexIndex < offset + polyVertexCount; vertexIndex++) {
+//      int firstTriIndex = vertexIndex - 1;
+//      int otherTriIndex = vertexIndex % polyVertexCount;
+//      result->triangles.emplace_back(
+//          result->polygons.back(),
+//          polyVertexStart + offset,
+//          polyVertexStart + firstTriIndex,
+//          polyVertexStart + otherTriIndex);
+//    }
+//  }
+//  fmt::printf("After triangulation, there are %d tris.\n", result->triangles.size());
+//  return result;
+//}
