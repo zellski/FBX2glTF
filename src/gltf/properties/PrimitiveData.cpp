@@ -19,13 +19,18 @@ PrimitiveData::PrimitiveData(
     : indices(indices.ix),
       material(material.ix),
       mode(TRIANGLES),
+      useFbNgonEncoding(false),
       dracoMesh(dracoMesh),
       dracoBufferView(-1) {}
 
-PrimitiveData::PrimitiveData(const AccessorData& indices, const MaterialData& material)
+PrimitiveData::PrimitiveData(
+    const AccessorData& indices,
+    const MaterialData& material,
+    const bool useFbNgonEncoding)
     : indices(indices.ix),
       material(material.ix),
       mode(TRIANGLES),
+      useFbNgonEncoding(useFbNgonEncoding),
       dracoMesh(nullptr),
       dracoBufferView(-1) {}
 
@@ -71,8 +76,15 @@ void to_json(json& j, const PrimitiveData& d) {
     }
     j["targets"] = targets;
   }
+  json extensions{};
   if (!d.dracoAttributes.empty()) {
-    j["extensions"] = {{KHR_DRACO_MESH_COMPRESSION,
-                        {{"bufferView", d.dracoBufferView}, {"attributes", d.dracoAttributes}}}};
+    extensions[KHR_DRACO_MESH_COMPRESSION] = {{"bufferView", d.dracoBufferView},
+                                              {"attributes", d.dracoAttributes}};
+  }
+  if (d.useFbNgonEncoding) {
+    extensions[FB_NGON_ENCODING] = {};
+  }
+  if (!extensions.empty()) {
+    j["extensions"] = extensions;
   }
 }

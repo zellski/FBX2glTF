@@ -26,7 +26,7 @@ struct PrimitiveData {
       const MaterialData& material,
       std::shared_ptr<draco::Mesh> dracoMesh);
 
-  PrimitiveData(const AccessorData& indices, const MaterialData& material);
+  PrimitiveData(const AccessorData& indices, const MaterialData& material, const bool useFbNgonEncoding);
 
   void AddAttrib(std::string name, const AccessorData& accessor);
 
@@ -66,6 +66,7 @@ struct PrimitiveData {
   const int indices;
   const unsigned int material;
   const MeshMode mode;
+  const bool useFbNgonEncoding;
 
   std::vector<std::tuple<int, int, int>> targetAccessors{};
 

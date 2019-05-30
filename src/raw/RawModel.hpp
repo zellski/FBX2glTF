@@ -530,6 +530,7 @@ class RawModel {
       std::vector<RawModel>& materialModels,
       bool shortIndices,
       const int keepAttribs,
+      const bool preserveTriangleOrder,
       const bool forceDiscrete) const;
 
  private:

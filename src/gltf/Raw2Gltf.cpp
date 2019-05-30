@@ -101,6 +101,7 @@ ModelData* Raw2Gltf(
       materialModels,
       options.useLongIndices == UseLongIndicesOptions::NEVER,
       options.keepAttribs,
+      options.useFbNgonEncoding,
       true);
 
   if (verboseOutput) {

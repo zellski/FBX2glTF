@@ -462,6 +462,7 @@ void RawModel::CreateMaterialModels(
     std::vector<RawModel>& materialModels,
     bool shortIndices,
     const int keepAttribs,
+    const bool preserveTriangleOrder,
     const bool forceDiscrete) const {
   // Sort all triangles based on material first, then surface, then first vertex index.
   std::vector<RawTriangle> sortedTriangles;
@@ -493,12 +494,6 @@ void RawModel::CreateMaterialModels(
     }
   }
 
-  // TODO TODO
-  // TODO TODO
-  // TODO TODO
-  // TODO TODO
-  bool ngonPreservingMode = true;
-
   const auto& ComparePos = [&](const RawTriangle& a, const RawTriangle& b) -> bool {
     if (GetMaterialIndex(a) != GetMaterialIndex(b)) {
       return GetMaterialIndex(a) < GetMaterialIndex(b);
@@ -506,7 +501,7 @@ void RawModel::CreateMaterialModels(
     if (GetSurfaceIndex(a) != GetSurfaceIndex(b)) {
       return GetSurfaceIndex(a) < GetSurfaceIndex(b);
     }
-    return ngonPreservingMode ? (a.polygonIndex < b.polygonIndex) : (a.verts[0] < b.verts[0]);
+    return preserveTriangleOrder ? (a.polygonIndex < b.polygonIndex) : (a.verts[0] < b.verts[0]);
   };
   const auto& CompareNeg = [&](const RawTriangle& a, const RawTriangle& b) -> bool {
     return !ComparePos(a, b);
