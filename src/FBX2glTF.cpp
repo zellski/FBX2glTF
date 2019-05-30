@@ -151,7 +151,7 @@ int main(int argc, char* argv[]) {
       "--blend-shape-tangents",
       gltfOptions.useBlendShapeTangents,
       "Include blend shape tangents, if reported present by the FBX SDK.");
-
+  
   app.add_option(
          "-k,--keep-attribute",
          [&](std::vector<std::string> attributes) -> bool {

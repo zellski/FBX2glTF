@@ -76,6 +76,44 @@ static const std::vector<TriangleIndex> getIndexArray(const RawModel& raw) {
   return result;
 }
 
+static void VerifyNgonEncoding(
+    const std::string name,
+    const std::vector<TriangleIndex>& indexArray) {
+  assert((indexArray.size() % 3) == 0);
+  int startIndex = -1;
+  int currentPolySize = -1;
+  int polyCount[20]{0};
+  for (int ix = 0; ix < indexArray.size(); ix += 3) {
+    if (indexArray[ix] != startIndex) {
+      fmt::printf(
+          "At ix %d, %d != %d; polySize = %d\n", ix, indexArray[ix], startIndex, currentPolySize);
+
+      if (startIndex >= 0) {
+        polyCount[currentPolySize]++;
+        //if (currentPolySize > 4) {
+        //  fmt::printf("At ix %d finished poly size %d\n", ix, currentPolySize);
+        //}
+      }
+      currentPolySize = 3;
+      startIndex = indexArray[ix];
+    } else {
+      currentPolySize++;
+      fmt::printf(
+          "At ix %d, %d == %d; polySize became %d\n", ix, indexArray[ix], startIndex, currentPolySize);
+    }
+  }
+  if (currentPolySize > 3) {
+    fmt::printf("One last poly, size %d\n", currentPolySize);
+    polyCount[currentPolySize]++;
+  }
+  fmt::printf("Mesh %s ngon reconstruction:\n", name);
+  for (int ii = 2; ii < 20; ii++) {
+    if (polyCount[ii] > 0) {
+      fmt::printf("  Polygon<%d> count: %d\n", ii, polyCount[ii]);
+    }
+  }
+}
+
 ModelData* Raw2Gltf(
     std::ofstream& gltfOutStream,
     const std::string& outputFolder,
@@ -460,12 +498,16 @@ ModelData* Raw2Gltf(
         indexes.count = to_uint32(3 * triangleCount);
         primitive.reset(new PrimitiveData(indexes, mData, dracoMesh));
       } else {
+        std::vector<TriangleIndex> indexArray = getIndexArray(surfaceModel);
         const AccessorData& indexes = *gltf->AddAccessorWithView(
             *gltf->GetAlignedBufferView(buffer, BufferViewData::GL_ELEMENT_ARRAY_BUFFER),
             useLongIndices ? GLT_UINT : GLT_USHORT,
-            getIndexArray(surfaceModel),
+            indexArray,
             std::string(""));
         primitive.reset(new PrimitiveData(indexes, mData, options.useFbNgonEncoding));
+        if (options.useFbNgonEncoding) {
+          VerifyNgonEncoding(rawSurface.name, indexArray);
+        }
       };
 
       //
