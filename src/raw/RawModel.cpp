@@ -545,12 +545,9 @@ void RawModel::CreateMaterialModels(
       continue;
     }
 
-    int lastMaterialIx = GetMaterialIndex(sortedTriangles[i - 1]);
-    int lastSurfaceIx = GetSurfaceIndex(sortedTriangles[i - 1]);
-
     if (i == 0 || (shortIndices && model->GetVertexCount() >= 0xFFFE) ||
-        (materialIx != lastMaterialIx) ||
-        ((surfaceIx != lastSurfaceIx) &&
+        (materialIx != GetMaterialIndex(sortedTriangles[i - 1])) ||
+        ((surfaceIx != GetSurfaceIndex(sortedTriangles[i - 1])) &&
          (forceDiscrete || IsDiscrete(sortedTriangles[i]) || IsDiscrete(sortedTriangles[i - 1])))) {
       materialModels.resize(materialModels.size() + 1);
       model = &materialModels[materialModels.size() - 1];

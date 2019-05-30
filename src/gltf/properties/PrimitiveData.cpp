@@ -82,7 +82,7 @@ void to_json(json& j, const PrimitiveData& d) {
                                               {"attributes", d.dracoAttributes}};
   }
   if (d.useFbNgonEncoding) {
-    extensions[FB_NGON_ENCODING] = {};
+    extensions[FB_NGON_ENCODING] = json::object();
   }
   if (!extensions.empty()) {
     j["extensions"] = extensions;

@@ -237,7 +237,7 @@ int main(int argc, char* argv[]) {
       ->check(CLI::Range(1, 32))
       ->group("Draco");
 
-  app.add_option(
+  app.add_flag(
       "--fb-ngon-encoding",
       gltfOptions.useFbNgonEncoding,
       "Whether to generate FB_ngon_encoding meshes (experimental, unstable).");

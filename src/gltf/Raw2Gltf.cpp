@@ -465,7 +465,7 @@ ModelData* Raw2Gltf(
             useLongIndices ? GLT_UINT : GLT_USHORT,
             getIndexArray(surfaceModel),
             std::string(""));
-        primitive.reset(new PrimitiveData(indexes, mData));
+        primitive.reset(new PrimitiveData(indexes, mData, options.useFbNgonEncoding));
       };
 
       //
@@ -805,6 +805,9 @@ ModelData* Raw2Gltf(
     if (options.draco.enabled) {
       extensionsUsed.push_back(KHR_DRACO_MESH_COMPRESSION);
       extensionsRequired.push_back(KHR_DRACO_MESH_COMPRESSION);
+    }
+    if (options.useFbNgonEncoding) {
+      extensionsUsed.push_back(FB_NGON_ENCODING);
     }
 
     json glTFJson{{"asset", {{"generator", "FBX2glTF v" + FBX2GLTF_VERSION}, {"version", "2.0"}}},

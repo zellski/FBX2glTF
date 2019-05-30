@@ -123,5 +123,5 @@ struct GltfOptions {
   /** Select baked animation framerate. */
   AnimationFramerateOptions animationFramerate = AnimationFramerateOptions::BAKE24;
   /** TODO */
-  bool useFbNgonEncoding{true};
+  bool useFbNgonEncoding{false};
 };
