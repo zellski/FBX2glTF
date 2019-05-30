@@ -62,10 +62,10 @@ void FbxMesh2Raw::Process() {
       triangulation = TriangulateUsingSDK();
       break;
     case FB_NGON_ENCODING:
-//      triangulation = TriangulateForNgonEncoding();
+      triangulation = TriangulateForNgonEncoding();
       break;
   }
-  
+
   const auto meshAccess = std::make_unique<FbxMeshAccess>(scene, node, textureLocations);
   int rawSurfaceIndex = ProcessSurface(*triangulation, *meshAccess);
   fmt::printf("After ProcessSurface(), rawSurfaceIndex = %d\n", rawSurfaceIndex);
@@ -73,9 +73,7 @@ void FbxMesh2Raw::Process() {
   ProcessPolygons(*triangulation, rawSurfaceIndex, *meshAccess);
 }
 
-int FbxMesh2Raw::ProcessSurface(
-    Triangulation& triangulation,
-    const FbxMeshAccess& meshAccess) {
+int FbxMesh2Raw::ProcessSurface(Triangulation& triangulation, const FbxMeshAccess& meshAccess) {
   const long fbxSurfaceId = triangulation.mesh->GetUniqueID();
 
   // Associate the node to this surface
@@ -260,7 +258,7 @@ void FbxMesh2Raw::ProcessTriangles(
       tri->polygon->hasTranslucentVertices |=
           meshAccess.colorLayer.LayerPresent() && (fabs(fbxColor.mAlpha - 1.0) > 1e-3);
 
-	  RawSurface& surface = raw.GetSurface(rawSurfaceIndex);
+      RawSurface& surface = raw.GetSurface(rawSurfaceIndex);
       surface.bounds.AddPoint(vertex.position);
 
       if (!triangulation.targetShapes.empty()) {
@@ -366,7 +364,7 @@ RawMaterialType FbxMesh2Raw::GetMaterialType(
 int FbxMesh2Raw::GetMaterial(
     const std::shared_ptr<FbxMaterialInfo> fbxMaterial,
     const std::vector<std::string> userProperties,
-	const bool hasTranslucentVertices,
+    const bool hasTranslucentVertices,
     const bool isSkinned) {
   int textures[RAW_TEXTURE_USAGE_MAX];
   std::fill_n(textures, (int)RAW_TEXTURE_USAGE_MAX, -1);
@@ -449,7 +447,7 @@ int FbxMesh2Raw::GetMaterial(
     }
   }
 
-    return raw.AddMaterial(
+  return raw.AddMaterial(
       materialId,
       materialName,
       GetMaterialType(textures, hasTranslucentVertices, isSkinned),
@@ -493,7 +491,7 @@ std::unique_ptr<Triangulation> FbxMesh2Raw::TriangulateUsingSDK() {
   for (int fbxPolyIx = 0; fbxPolyIx < mesh->GetPolygonCount(); fbxPolyIx++) {
     FBX_ASSERT(mesh->GetPolygonSize(fbxPolyIx) == 3);
 
-	auto polygon = std::make_shared<Polygon>(fbxPolyIx);
+    auto polygon = std::make_shared<Polygon>(fbxPolyIx);
     auto triangle = std::make_shared<Triangle>(
         polygon, polygonVertexIndex + 0, polygonVertexIndex + 1, polygonVertexIndex + 2);
     result->polygons.push_back(polygon);
@@ -503,43 +501,44 @@ std::unique_ptr<Triangulation> FbxMesh2Raw::TriangulateUsingSDK() {
   return result;
 }
 
-//std::unique_ptr<Triangulation> FbxMesh2Raw::TriangulateForNgonEncoding() {
-//  assert(node->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::eMesh);
-//  FbxMesh* mesh = node->GetMesh();
-//  auto result = std::make_unique<Triangulation>(mesh);
-//
-//  int polyCount[20] = {0};
-//  for (int polygonIndex = 0; polygonIndex < mesh->GetPolygonCount(); polygonIndex++) {
-//    polyCount[std::min(mesh->GetPolygonSize(polygonIndex), 20)]++;
-//  }
-//  fmt::printf(
-//      "Before triangulation:\nThere are %d polys and %d control points.\n",
-//      mesh->GetPolygonCount(),
-//      mesh->GetControlPointsCount());
-//  for (int i = 0; i < 20; i++) {
-//    if (polyCount[i] > 0) {
-//      fmt::printf("Polygon<%d> count: %d\n", i, polyCount[i]);
-//    }
-//  }
-//
-//  int* allPolygonVertices = mesh->GetPolygonVertices();
-//  int anchorIndex = -1;
-//  for (int polygonIndex = 0; polygonIndex < mesh->GetPolygonCount(); polygonIndex++) {
-//    int polyVertexCount = mesh->GetPolygonSize(polygonIndex);
-//    int polyVertexStart = mesh->GetPolygonVertexIndex(polygonIndex);
-//    int offset = (anchorIndex == allPolygonVertices[polyVertexCount]) ? 1 : 0;
-//    anchorIndex = allPolygonVertices[polyVertexStart + offset];
-//    result->polygons.emplace_back(polygonIndex);
-//    for (int vertexIndex = offset + 2; vertexIndex < offset + polyVertexCount; vertexIndex++) {
-//      int firstTriIndex = vertexIndex - 1;
-//      int otherTriIndex = vertexIndex % polyVertexCount;
-//      result->triangles.emplace_back(
-//          result->polygons.back(),
-//          polyVertexStart + offset,
-//          polyVertexStart + firstTriIndex,
-//          polyVertexStart + otherTriIndex);
-//    }
-//  }
-//  fmt::printf("After triangulation, there are %d tris.\n", result->triangles.size());
-//  return result;
-//}
+std::unique_ptr<Triangulation> FbxMesh2Raw::TriangulateForNgonEncoding() {
+  assert(node->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::eMesh);
+  FbxMesh* mesh = node->GetMesh();
+  auto result = std::make_unique<Triangulation>(mesh);
+
+  int polyCount[20] = {0};
+  for (int polygonIndex = 0; polygonIndex < mesh->GetPolygonCount(); polygonIndex++) {
+    polyCount[std::min(mesh->GetPolygonSize(polygonIndex), 20)]++;
+  }
+  fmt::printf(
+      "Before triangulation:\nThere are %d polys and %d control points.\n",
+      mesh->GetPolygonCount(),
+      mesh->GetControlPointsCount());
+  for (int i = 0; i < 20; i++) {
+    if (polyCount[i] > 0) {
+      fmt::printf("Polygon<%d> count: %d\n", i, polyCount[i]);
+    }
+  }
+
+  int* allPolygonVertices = mesh->GetPolygonVertices();
+  int anchorIndex = -1;
+  for (int polygonIndex = 0; polygonIndex < mesh->GetPolygonCount(); polygonIndex++) {
+    int polyVertexCount = mesh->GetPolygonSize(polygonIndex);
+    int polyVertexStart = mesh->GetPolygonVertexIndex(polygonIndex);
+    int offset = (anchorIndex == allPolygonVertices[polyVertexCount]) ? 1 : 0;
+    anchorIndex = allPolygonVertices[polyVertexStart + offset];
+    auto polygon = std::make_shared<Polygon>(polygonIndex);
+    result->polygons.push_back(polygon);
+    for (int vertexIndex = offset + 2; vertexIndex < offset + polyVertexCount; vertexIndex++) {
+      int firstTriIndex = vertexIndex - 1;
+      int otherTriIndex = vertexIndex % polyVertexCount;
+      result->triangles.push_back(std::make_shared<Triangle>(
+          polygon,
+          polyVertexStart + offset,
+          polyVertexStart + firstTriIndex,
+          polyVertexStart + otherTriIndex));
+        }
+  }
+  fmt::printf("After triangulation, there are %d tris.\n", result->triangles.size());
+  return result;
+}

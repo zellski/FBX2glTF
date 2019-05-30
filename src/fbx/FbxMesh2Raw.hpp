@@ -29,7 +29,7 @@ struct Polygon {
 struct Triangle {
   Triangle(std::shared_ptr<Polygon> polygon, int v1, int v2, int v3)
       : polygon(polygon), vertexIndices{v1, v2, v3}, rawVertexIndices{-1, -1, -1} {}
-  std::shared_ptr<Polygon> polygon;
+  const std::shared_ptr<Polygon> polygon;
   const int vertexIndices[3];
   int rawVertexIndices[3];
 };
@@ -88,7 +88,7 @@ class FbxMesh2Raw {
       const bool isSkinned);
   int GetMaterial(
       const std::shared_ptr<FbxMaterialInfo> fbxMaterial,
-	  const std::vector<std::string> userProperties,
+      const std::vector<std::string> userProperties,
       const bool hasTranslucentVertices,
       const bool isSkinned);
   void ProcessPolygons(
@@ -104,4 +104,4 @@ class FbxMesh2Raw {
   const FbxMeshTriangulationMethod triangulationMethod;
   const std::map<const FbxTexture*, FbxString>& textureLocations;
 };
-} // namespace Fbx2Gltf
+} // namespace FBX2glTF

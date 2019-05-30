@@ -237,6 +237,11 @@ int main(int argc, char* argv[]) {
       ->check(CLI::Range(1, 32))
       ->group("Draco");
 
+  app.add_option(
+      "--fb-ngon-encoding",
+      gltfOptions.useFbNgonEncoding,
+      "Whether to generate FB_ngon_encoding meshes (experimental, unstable).");
+
   CLI11_PARSE(app, argc, argv);
 
   bool do_flip_u = false;

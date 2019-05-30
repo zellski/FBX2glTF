@@ -36,8 +36,12 @@ static void ReadMesh(
     RawModel& raw,
     FbxScene* pScene,
     FbxNode* pNode,
-    const std::map<const FbxTexture*, FbxString>& textureLocations) {
-  FbxMesh2Raw(raw, pScene, pNode, FbxMeshTriangulationMethod::FBX_SDK, textureLocations).Process();
+    const std::map<const FbxTexture*, FbxString>& textureLocations,
+    const GltfOptions& options) {
+  auto encoding = options.useFbNgonEncoding ? FbxMeshTriangulationMethod::FB_NGON_ENCODING
+                                            : FbxMeshTriangulationMethod::FBX_SDK;
+  FbxMesh2Raw meshConverter(raw, pScene, pNode, encoding, textureLocations);
+  meshConverter.Process();
 }
 
 // ar : aspectY / aspectX
@@ -166,7 +170,8 @@ static void ReadNodeAttributes(
     RawModel& raw,
     FbxScene* pScene,
     FbxNode* pNode,
-    const std::map<const FbxTexture*, FbxString>& textureLocations) {
+    const std::map<const FbxTexture*, FbxString>& textureLocations,
+    const GltfOptions& options) {
   if (!pNode->GetVisibility()) {
     return;
   }
@@ -190,7 +195,7 @@ static void ReadNodeAttributes(
       case FbxNodeAttribute::eNurbsSurface:
       case FbxNodeAttribute::eTrimNurbsSurface:
       case FbxNodeAttribute::ePatch: {
-        ReadMesh(raw, pScene, pNode, textureLocations);
+        ReadMesh(raw, pScene, pNode, textureLocations, options);
         break;
       }
       case FbxNodeAttribute::eCamera: {
@@ -221,7 +226,7 @@ static void ReadNodeAttributes(
   }
 
   for (int child = 0; child < pNode->GetChildCount(); child++) {
-    ReadNodeAttributes(raw, pScene, pNode->GetChild(child), textureLocations);
+    ReadNodeAttributes(raw, pScene, pNode->GetChild(child), textureLocations, options);
   }
 }
 
@@ -711,7 +716,7 @@ bool LoadFBXFile(
   scaleFactor = FbxSystemUnit::m.GetConversionFactorFrom(FbxSystemUnit::cm);
 
   ReadNodeHierarchy(raw, pScene, pScene->GetRootNode(), 0, "");
-  ReadNodeAttributes(raw, pScene, pScene->GetRootNode(), textureLocations);
+  ReadNodeAttributes(raw, pScene, pScene->GetRootNode(), textureLocations, options);
   ReadAnimations(raw, pScene, options);
 
   pScene->Destroy();
