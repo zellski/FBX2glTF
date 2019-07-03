@@ -94,8 +94,7 @@ static void VerifyNgonEncoding(
       currentPolySize++;
     }
   }
-  if (currentPolySize > 3) {
-    fmt::printf("One last poly, size %d\n", currentPolySize);
+  if (startIndex >= 0) {
     polyCount[currentPolySize]++;
   }
 }

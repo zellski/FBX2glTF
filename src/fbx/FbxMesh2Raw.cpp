@@ -501,7 +501,7 @@ std::unique_ptr<Triangulation> FbxMesh2Raw::TriangulateForNgonEncoding() {
   for (int polygonIndex = 0; polygonIndex < mesh->GetPolygonCount(); polygonIndex++) {
     int polyVertexCount = mesh->GetPolygonSize(polygonIndex);
     int polyVertexStart = mesh->GetPolygonVertexIndex(polygonIndex);
-    int offset = (anchorIndex == allPolygonVertices[polyVertexCount]) ? 1 : 0;
+    int offset = (anchorIndex == allPolygonVertices[polyVertexStart]) ? 1 : 0;
     anchorIndex = allPolygonVertices[polyVertexStart + offset];
 
     auto polygon = std::make_shared<Polygon>(polygonIndex);
