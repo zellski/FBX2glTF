@@ -76,29 +76,6 @@ static const std::vector<TriangleIndex> getIndexArray(const RawModel& raw) {
   return result;
 }
 
-static void VerifyNgonEncoding(
-    const std::string name,
-    const std::vector<TriangleIndex>& indexArray) {
-  assert((indexArray.size() % 3) == 0);
-  int startIndex = -1;
-  int currentPolySize = -1;
-  int polyCount[20]{0};
-  for (int ix = 0; ix < indexArray.size(); ix += 3) {
-    if (indexArray[ix] != startIndex) {
-      if (startIndex >= 0) {
-        polyCount[currentPolySize]++;
-      }
-      currentPolySize = 3;
-      startIndex = indexArray[ix];
-    } else {
-      currentPolySize++;
-    }
-  }
-  if (startIndex >= 0) {
-    polyCount[currentPolySize]++;
-  }
-}
-
 ModelData* Raw2Gltf(
     std::ofstream& gltfOutStream,
     const std::string& outputFolder,
@@ -490,9 +467,6 @@ ModelData* Raw2Gltf(
             indexArray,
             std::string(""));
         primitive.reset(new PrimitiveData(indexes, mData, options.useFbNgonEncoding));
-        if (options.useFbNgonEncoding) {
-          VerifyNgonEncoding(rawSurface.name, indexArray);
-        }
       };
 
       //
