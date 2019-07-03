@@ -85,32 +85,18 @@ static void VerifyNgonEncoding(
   int polyCount[20]{0};
   for (int ix = 0; ix < indexArray.size(); ix += 3) {
     if (indexArray[ix] != startIndex) {
-      fmt::printf(
-          "At ix %d, %d != %d; polySize = %d\n", ix, indexArray[ix], startIndex, currentPolySize);
-
       if (startIndex >= 0) {
         polyCount[currentPolySize]++;
-        //if (currentPolySize > 4) {
-        //  fmt::printf("At ix %d finished poly size %d\n", ix, currentPolySize);
-        //}
       }
       currentPolySize = 3;
       startIndex = indexArray[ix];
     } else {
       currentPolySize++;
-      fmt::printf(
-          "At ix %d, %d == %d; polySize became %d\n", ix, indexArray[ix], startIndex, currentPolySize);
     }
   }
   if (currentPolySize > 3) {
     fmt::printf("One last poly, size %d\n", currentPolySize);
     polyCount[currentPolySize]++;
-  }
-  fmt::printf("Mesh %s ngon reconstruction:\n", name);
-  for (int ii = 2; ii < 20; ii++) {
-    if (polyCount[ii] > 0) {
-      fmt::printf("  Polygon<%d> count: %d\n", ii, polyCount[ii]);
-    }
   }
 }
 
