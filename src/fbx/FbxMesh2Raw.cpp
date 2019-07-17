@@ -493,8 +493,8 @@ std::unique_ptr<Triangulation> FbxMesh2Raw::TriangulateUsingSDK() {
 
 std::unique_ptr<Triangulation> FbxMesh2Raw::TriangulateForNgonEncoding() {
   assert(node->GetNodeAttribute()->GetAttributeType() == FbxNodeAttribute::eMesh);
-  auto result = std::make_unique<Triangulation>(mesh);
   FbxMesh* mesh = node->GetMesh();
+  auto result = std::make_unique<Triangulation>(mesh);
 
   int* allPolygonVertices = mesh->GetPolygonVertices();
   int anchorIndex = -1;
